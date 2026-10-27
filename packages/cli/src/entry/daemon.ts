@@ -122,6 +122,7 @@ import { applyEngineConfigEnv, normalizeEngineConfig } from "./daemon/engineConf
 import { normalizeRoutingCommand } from "./daemon/routing.js";
 import { resolveLiveRoute } from "./liveRoute.js";
 import { backupChain, decidePinnedFailover, pinnedFailoverEnabled, type PinnedFailoverDecision } from "./pinnedFailover.js";
+import { describeRetirement } from "./providerCredentialGate.js";
 import { saveReportLocally, trimRolloutForReport } from "./daemon/report.js";
 import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
@@ -381,6 +382,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     /** When the active turn began. Scopes an interrupt's background sweep to
      *  the work that turn started. */
     turnStartedAt?: number;
+    /** `${family}@${retiredAt}` of the retirement this chat was already told
+     *  about — the skip is said ONCE per retirement, then only the badge. */
+    retiredPinNoted?: string;
+    /** Running background jobs last announced mid-turn (see streamOnce). */
+    bgRunningAnnounced?: number;
   }
   const DEFAULT_SID = "__primary__";
   const sessions = new Map<string, DaemonEntry>();
@@ -423,8 +429,21 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // cooldown with ARES_DEAD_PROVIDER_TTL_MS.
   const deadProviders = new Map<string, number>(); // family → epoch ms it may be re-probed
   const deadProviderTtlMs = Math.max(60_000, Number(process.env.ARES_DEAD_PROVIDER_TTL_MS) || 10 * 60_000);
-  const markProviderDead = (family: string): void => {
+  // WHY a family is retired, kept past the cooldown: once the cooldown
+  // elapses a PINNED family is re-probed with its cheap preflight instead of
+  // a full turn (the 2026-10-26 field report: a past-due Ollama key and an
+  // invalid Anthropic key replayed as three error bubbles on every prompt).
+  // Cleared by a key change, a manual switch to the family, or a turn that
+  // actually completes on it.
+  const deadReasons = new Map<string, { reason: string; at: number }>();
+  const markProviderDead = (family: string, reason = ""): void => {
     deadProviders.set(family, Date.now() + deadProviderTtlMs);
+    const prior = deadReasons.get(family);
+    deadReasons.set(family, { reason: reason || prior?.reason || "", at: prior?.at ?? Date.now() });
+  };
+  const reviveProvider = (family: string): void => {
+    deadProviders.delete(family);
+    deadReasons.delete(family);
   };
   // Prune expired entries (cooldown elapsed → give the provider another chance) and
   // return the still-dead set — the single read path so re-probe is consistent.
@@ -2775,7 +2794,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           const previous = entry.live.selection;
           // The owner may have just repaired this provider; re-probe this one
           // without reviving unrelated providers that failed in other chats.
-          deadProviders.delete(providerFamilyForSelection(selection));
+          reviveProvider(providerFamilyForSelection(selection));
           await primeContextCeilings(selection);
           await entry.live.session.setProvider(selection.provider, selection.model, {
             ...contextControls(selection),
@@ -2870,6 +2889,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const key = typeof command.key === "string" ? command.key.trim() : "";
         const model = typeof command.model === "string" && command.model.trim() ? command.model.trim() : undefined;
         const patch: Partial<UiSettings> = {};
+        // A fresh key is the fix the retirement notice asked for — the next
+        // turn on this family probes it again instead of waiting out the cooldown.
+        reviveProvider(provider);
         if (provider === "openrouter") {
           patch.openRouterKey = key;
           if (model) patch.lastOpenRouterModel = model;
@@ -3055,6 +3077,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         command.type === "room_notes" ||
         command.type === "room_me" ||
         command.type === "room_guest_remove" ||
+        command.type === "room_invite_revoke" ||
         command.type === "room_stop"
       ) {
         const kind = command.type;
@@ -3108,6 +3131,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               out({ type: "room_invite", roomId, ...inv });
             } else if (kind === "room_guest_remove") {
               const next = await desktopRooms.revokeGuest(roomId, cleanCommandId(command.guestId) ?? "");
+              out({ type: "room_changed", room: desktopRooms.wire(next) });
+            } else if (kind === "room_invite_revoke") {
+              const next = await desktopRooms.revokeInvite(roomId, typeof command.code === "string" ? command.code.trim() : "");
               out({ type: "room_changed", room: desktopRooms.wire(next) });
             } else if (kind === "room_job") {
               const spec = (command.job ?? {}) as { id?: string; title?: string; owner?: string; status?: string; due?: string; link?: string; note?: string; remove?: boolean };
@@ -5099,6 +5125,13 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // manual mode ran no router.
         let turnRoutingMode: "auto" | "manual" = "manual";
         let stuckTurnTimer: ReturnType<typeof setInterval> | null = null;
+        // Restore the pin after a one-turn PINNED failover (manual routing):
+        // the backup finishes this turn, the owner's choice takes the next.
+        // Set either by the ladder below or, for a pin already known to be
+        // retired, by the turn-start skip inside the routing block.
+        let pinnedRestore: ProviderSelection | null = null;
+        // The turn-start skip's receipt for route_resolved (from/to/because).
+        let retiredPinSwitch: { from: string; to: string; because: string } | null = null;
         try {
           if (ownerCancellationPending()) throw new Error("owner cancelled before optional routing");
           const settings = await loadUiSettings();
@@ -5187,6 +5220,74 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               source = "sticky"; // staying on the model that already owns this conversation
             }
             if (!ownerCancellationPending()) entry.lane = lane;
+          } else if (pinnedFailoverEnabled() && !["ares", "mock", "moa"].includes(providerName)) {
+            // Manual routing with a pin the daemon already KNOWS is dead
+            // (auth/balance death earlier this boot). The old flow re-ran the
+            // pin on every turn — a 403, a "back in the draft" notice and a
+            // "finishing on X" notice per prompt, per agent — because the pin
+            // is restored after each rescue. The pin is still restored; what
+            // changes is that a retired pin is skipped BEFORE the request,
+            // and after its cooldown it is re-probed with the cheap preflight
+            // instead of a doomed turn. Said once per retirement per chat;
+            // after that only the message's model badge shows the detour.
+            const retired = deadReasons.get(providerName);
+            let skipReason: string | null = null;
+            if (retired && isProviderDead(providerName)) {
+              skipReason = retired.reason || "retired this session";
+            } else if (retired && entry.live.selection.preflight) {
+              try {
+                await preflightProviderSelection(entry.live.selection);
+                deadReasons.delete(providerName);
+              } catch (err) {
+                const why = err instanceof Error ? err.message : String(err);
+                markProviderDead(providerName, why);
+                skipReason = why;
+              }
+            }
+            if (skipReason && !ownerCancellationPending()) {
+              const pin = entry.live.selection;
+              const pinFamily = providerFamilyForSelection(pin);
+              const decision = await decidePinnedFailover({
+                current: pin,
+                fatal: skipReason,
+                attempt: 2, // past the same-provider retry: the pin is known dead
+                hasImages: goal.includes("data:image/"),
+                dead: liveDeadProviders(),
+                tried: new Set<string>(),
+                chain: backupChain(settings),
+                resolve: (family) => selectProvider(new Map([["provider", family]])),
+                preflight: (sel) => preflightProviderSelection(sel),
+              }).catch((): PinnedFailoverDecision => ({ action: "stop", reason: "failover ladder failed" }));
+              if (decision.action === "switch") {
+                const sel = decision.selection;
+                await primeContextCeilings(sel);
+                await entry.live.session.setProvider(sel.provider, sel.model, {
+                  ...contextControls(sel),
+                  summarizeSpan: makeSpanSummarizer(sel, (usage) =>
+                    entry.live.session.recordAuxiliaryUsage("compaction", sel.provider.name, sel.model, usage),
+                  ),
+                });
+                pinnedRestore = pin;
+                entry.live.selection = sel;
+                model = sel.model;
+                providerName = providerFamilyForSelection(sel);
+                source = "assigned";
+                routeReasons = decision.reasons;
+                retiredPinSwitch = { from: decision.from, to: decision.to, because: skipReason };
+                const retiredAt = deadReasons.get(pinFamily)?.at ?? Date.now();
+                const stamp = `${pinFamily}@${retiredAt}`;
+                if (entry.retiredPinNoted !== stamp) {
+                  entry.retiredPinNoted = stamp;
+                  tagEmit(command.sessionId, {
+                    type: "system_reminder_injected",
+                    source: "instructions",
+                    text: `Running on ${decision.to} — your pinned ${decision.from} is ${describeRetirement(skipReason, retiredAt)}. It stays pinned and comes back by itself once its key works; fix it under Settings → API Keys. This note shows once; the model badge on each reply shows which model answered.`,
+                  });
+                }
+              }
+              // "stop": no usable backup — let the turn run on the pin and
+              // fail visibly, exactly as before.
+            }
           }
           if (!ownerCancellationPending()) {
             // The lane tag is a ROUTER decision. In manual mode no router ran —
@@ -5204,6 +5305,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               ...(routeVia ? { via: routeVia } : {}),
               ...(routeReasons.length ? { reasons: routeReasons } : {}),
               ...(routeWarnings.length ? { warnings: routeWarnings } : {}),
+              // A retired pin skipped at turn start is the same one-turn
+              // rescue the ladder makes mid-turn; same receipt, same shape.
+              ...(retiredPinSwitch ? { reason: "failover", ...retiredPinSwitch, restoresPin: true } : {}),
             });
           }
         } catch {
@@ -5222,9 +5326,6 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // Restore the user's pinned model after a one-turn vision escalation.
         let revertSelection: ProviderSelection | null = null;
         let escalatedSelection: ProviderSelection | null = null;
-        // Restore the pin after a one-turn PINNED failover (manual routing):
-        // the backup finishes this turn, the owner's choice takes the next.
-        let pinnedRestore: ProviderSelection | null = null;
         try {
           if (!ownerCancellationPending()) {
             // A per-message tenant on the send frame (a multi-user channel
@@ -5374,6 +5475,18 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                 toolNamesById.delete(ev.id);
                 applyPersonaToolResult(entry.live, ev.output, (payload) => tagEmit(sid, payload), entry.personaGate);
               }
+              // A background job used to become visible only when the turn
+              // settled — a dev server spawned early in a long turn ran for
+              // minutes with nothing on screen saying so (field report
+              // 2026-10-26: "better indicator that spawned processes are
+              // running"). Announce the set whenever a tool changes it.
+              if (ev.type === "tool_end") {
+                const running = backgroundJobsFor(sid, entry).filter((job) => job.status === "running").length;
+                if (running !== (entry.bgRunningAnnounced ?? 0)) {
+                  entry.bgRunningAnnounced = running;
+                  emitBackgroundJobs(sid, entry);
+                }
+              }
               // Continuous verification, daemon path: every edited file feeds the
               // verifier (same as the chat paths); the engine's end-of-turn gate
               // settles it and refuses "done" over red verdicts.
@@ -5468,7 +5581,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // The provider that just failed: if it's a balance/auth death, retire
             // it for the session so we never waste another turn on it.
             if (isPermanentlyDeadError(turnState.fatalProvider)) {
-              markProviderDead(providerFamilyForSelection(entry.live.selection));
+              markProviderDead(providerFamilyForSelection(entry.live.selection), turnState.fatalProvider);
             }
             const failoverSettings = await loadUiSettings().catch(() => null);
             const routingMode = failoverSettings?.routingMode === "auto" ? "auto" : "manual";
@@ -5605,6 +5718,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             turnState.fatalProvider = null;
             await streamOnce(entry.live.session.resumeTurn());
           }
+          // A turn that completed on a family is the proof it is back.
+          if (turnState.status === "completed") deadReasons.delete(providerFamilyForSelection(entry.live.selection));
           // Post-turn settling (verifier/journal/memory). On a CANCELLED turn
           // this sits directly on the "stopping safely" path — bound it so
           // bookkeeping can never outlive the Stop; the detached remainder

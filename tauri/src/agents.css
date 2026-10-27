@@ -722,3 +722,6 @@
 /* a living clip sits over the frames and fades in once it can play */
 .posedPhoto .posedClip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scale(1.5); transform-origin: 50% 24%; z-index: 3; opacity: 0; transition: opacity 400ms ease-in-out; pointer-events: none; }
 .posedPhoto[data-clip="1"] .posedClip { opacity: 1; }
+
+/* the copy button is the one non-prose child of a text-thread reply that stays */
+.ares.ares .chat[data-imsg="1"] .turn.assistant .turnBody > .msgCopy { display: inline-grid; }

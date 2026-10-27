@@ -20,6 +20,19 @@ import path from "node:path";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { fetchOpenRouterModels } from "@ares/core";
 
+/** Usage is keyed by provider FAMILY ("ollama"), never by the wire adapter's
+ *  name ("ollama-cloud:reasoner" — the pool's slot provider). The field
+ *  report (2026-10-26): every Ollama turn was counted under the adapter name,
+ *  so the Settings usage bar for Ollama stayed empty and its cost was "no
+ *  price" instead of free. */
+export function usageProviderFamily(name: string): string {
+  const bare = name.toLowerCase().split(":")[0] ?? "";
+  if (bare === "ollama-cloud" || bare === "ollama") return "ollama";
+  if (bare.startsWith("moa")) return "moa";
+  if (bare.startsWith("mock")) return "mock";
+  return bare || "unknown";
+}
+
 export interface UsageStats {
   sessions: number;
   apiCalls: number;
@@ -139,7 +152,7 @@ function foldLine(line: string, entry: FileCacheEntry): void {
   const eventModel = ev.model || entry.defaultModel;
   // Session persistence stamps provider on turn_end/auxiliary_usage — use
   // it for a real per-provider rollup.
-  const eventProvider = (ev.provider || entry.defaultProvider).toLowerCase();
+  const eventProvider = usageProviderFamily(ev.provider || entry.defaultProvider);
   agg.apiCalls += calls;
   agg.tokensIn += inTok;
   agg.tokensOut += outTok;
@@ -309,7 +322,7 @@ async function computeUsageStats(workspace: string, days: number): Promise<Usage
     try {
       const meta = JSON.parse(metaRaw) as { provider?: { model?: string; name?: string } };
       if (meta.provider?.model) defaultModel = meta.provider.model;
-      if (meta.provider?.name) defaultProvider = meta.provider.name;
+      if (meta.provider?.name) defaultProvider = usageProviderFamily(meta.provider.name);
     } catch {
       /* unknown model */
     }

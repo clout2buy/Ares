@@ -4985,3 +4985,49 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
   background-color: var(--bg-raised, #1f1f1f);
   color: var(--text, #ececf1);
 }
+
+/* ── field-report batch, 2026-10-26 ─────────────────────────────────── */
+/* a long thread gave a sliver of a scrollbar thumb; it is always grabbable now */
+::-webkit-scrollbar-thumb { min-height: 48px; }
+.chat::-webkit-scrollbar-thumb { min-height: 72px; }
+/* copy one message: a corner button that appears on hover */
+.turn { position: relative; }
+.msgCopy {
+  position: absolute; top: 2px; right: 2px; z-index: 2;
+  display: inline-grid; place-items: center; width: 24px; height: 24px;
+  border-radius: 7px; color: var(--muted);
+  background: var(--panel-2, rgba(0, 0, 0, 0.35)); border: 1px solid var(--line);
+  opacity: 0; transition: opacity 120ms ease, color 120ms ease; cursor: pointer;
+}
+.turn:hover .msgCopy, .msgCopy:focus-visible, .msgCopy[data-copied="1"] { opacity: 1; }
+.msgCopy:hover { color: var(--text); }
+.msgCopy[data-copied="1"] { color: #28c840; }
+.turn.user .msgCopy { right: auto; left: 2px; }
+.turn.assistant .turnBody { position: relative; }
+.turn.assistant .turnBody > .msgCopy { top: 0; right: -4px; }
+/* the plan: a cancelled step is marked, not left as an empty ring */
+.todoPanel li[data-status="cancelled"] { text-decoration: line-through; text-decoration-color: rgba(255, 255, 255, 0.28); }
+.todoPanel li[data-status="cancelled"] i { border-style: dashed; border-color: var(--faint); font: 700 10px/1 var(--mono); font-style: normal; color: var(--faint); }
+.todoPanel li[data-status="cancelled"] i::before { content: "×"; }
+.todoStateTag { margin-left: auto; font: 600 9px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--faint); font-style: normal; text-decoration: none; flex: none; }
+.todoCancelledCount { font-style: normal; color: var(--faint); }
+/* the header meters: the provider's plan usage, and what runs in the background */
+.stageHeadMeters { display: inline-flex; align-items: center; gap: 8px; margin-left: 10px; flex: none; }
+.stageUsage, .stageBg {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 10px; border-radius: 999px;
+  font: 500 11px/1 var(--mono); color: var(--muted);
+  background: var(--panel-2, rgba(0, 0, 0, 0.3)); border: 1px solid var(--line); cursor: pointer;
+}
+.stageUsage:hover, .stageBg:hover { color: var(--text); }
+.stageUsage b { font-weight: 600; color: var(--text); text-transform: capitalize; }
+.stageUsage small { font-size: 9.5px; color: var(--faint); }
+.stageUsageMeter { display: inline-block; width: 54px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.stageUsageMeter em { display: block; height: 100%; border-radius: 3px; background: #28c840; transition: width 300ms ease; }
+.stageUsage[data-tone="warn"] .stageUsageMeter em { background: #f5a524; }
+.stageUsage[data-tone="bad"] .stageUsageMeter em { background: #e5484d; }
+.stageBgDot { width: 8px; height: 8px; border-radius: 50%; background: #28c840; box-shadow: 0 0 0 0 rgba(40, 200, 64, 0.5); animation: stageBgBreathe 2.4s ease-in-out infinite; }
+/* a slow, low-contrast swell, never a flash (photosensitive doctrine) */
+@keyframes stageBgBreathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(40, 200, 64, 0.45); } 50% { box-shadow: 0 0 0 5px rgba(40, 200, 64, 0); } }
+/* agent sheet: the Save row stays in view however long the form is */
+.agentSheetFoot { position: sticky; bottom: -22px; margin: 4px -22px -22px; padding: 12px 22px 18px; background: var(--bg-raised, #16130f); z-index: 3; border-top: 1px solid var(--line); }

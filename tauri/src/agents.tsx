@@ -516,7 +516,10 @@ export async function squareAvatar(file: Blob, edge = 512): Promise<string> {
     if (!ctx) throw new Error("no canvas");
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.9);
+    // JPEG has no alpha: a transparent sprite re-encoded as JPEG came back on
+    // a BLACK square (field report 2026-10-26). Photos (JPEG in) stay JPEG;
+    // anything else keeps its transparency as PNG.
+    return /jpe?g/i.test(file.type) ? canvas.toDataURL("image/jpeg", 0.9) : canvas.toDataURL("image/png");
   }
 }
 

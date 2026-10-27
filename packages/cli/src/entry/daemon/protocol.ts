@@ -115,6 +115,8 @@ export interface DaemonInputCommand {
   link?: string;
   job?: Record<string, unknown>;
   guestId?: string;
+  /** room_invite_revoke — the invite code to retract. */
+  code?: string;
   muted?: boolean;
   notes?: string;
   /** directory_profile — displayName / bio / shownAgents (persona ids). */

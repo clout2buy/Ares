@@ -1144,6 +1144,20 @@ export class DesktopRooms {
     return { link: inviteLink(origin, room.id, code), code, origin };
   }
 
+  /** Retract an invite that nobody has used yet (a used one is a guest —
+   *  see revokeGuest). The link stops working at once. */
+  async revokeInvite(roomId: string, code: string): Promise<Room> {
+    const room = this.store.get(roomId);
+    if (!room) throw new RoomError("unknown room");
+    if (room.host.kind === "remote") throw new RoomError("only the room's host can retract an invite");
+    const invite = room.invites.find((i) => i.code === code && !i.usedBy);
+    if (!invite) return room;
+    const next: Room = { ...room, invites: room.invites.filter((i) => i !== invite), updatedAt: this.stamp() };
+    await this.store.save(next);
+    this.emitRoom(next);
+    return next;
+  }
+
   async revokeGuest(roomId: string, guestId: string): Promise<Room> {
     const room = this.store.get(roomId);
     if (!room) throw new RoomError("unknown room");

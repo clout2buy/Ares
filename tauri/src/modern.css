@@ -2166,7 +2166,9 @@ html[data-perf="lite"] .ares[data-style="modern"] .statusBar {
 /* ── chrome details ──────────────────────────────────────────────────────── */
 
 .ares[data-style="modern"] ::-webkit-scrollbar { width: 9px; height: 9px; }
-.ares[data-style="modern"] ::-webkit-scrollbar-thumb { background: rgba(200, 155, 94, 0.22); border-radius: 9px; }
+.ares[data-style="modern"] ::-webkit-scrollbar-thumb { background: rgba(200, 155, 94, 0.22); border-radius: 9px; min-height: 48px; }
+.ares[data-style="modern"] ::-webkit-scrollbar-thumb:hover { background: rgba(200, 155, 94, 0.4); }
+.ares[data-style="modern"] .chat::-webkit-scrollbar-thumb { min-height: 72px; }
 .ares[data-style="modern"] ::-webkit-scrollbar-track { background: transparent; }
 .ares[data-style="modern"] a { color: var(--gold-hi); border-bottom-color: rgba(200, 155, 94, 0.3); }
 .ares[data-style="modern"] a:hover { color: #ffd9a0; }

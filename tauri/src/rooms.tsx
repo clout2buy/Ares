@@ -286,6 +286,7 @@ export function RoomView({
   onRename,
   onDelete,
   onRemoveGuest,
+  onRevokeInvite,
   onOpenSeat,
 }: {
   room: RoomVm;
@@ -312,6 +313,8 @@ export function RoomView({
   onRename: (patch: { name?: string; emoji?: string; color?: string; purpose?: string; workspaceId?: string }) => void;
   onDelete: () => void;
   onRemoveGuest: (guestId: string) => void;
+  /** Retract an invite link nobody has used yet. */
+  onRevokeInvite: (code: string) => void;
   /** Open an agent's seat (its private thread) to see its reasoning. */
   onOpenSeat: (sessionId: string) => void;
 }) {
@@ -366,6 +369,7 @@ export function RoomView({
   };
 
   const open = room.board.filter((j) => j.status !== "done");
+  const pendingInvites = room.invites.filter((i) => !i.usedBy);
   const summary = `${people.length} ${people.length === 1 ? "person" : "people"} · ${agentsHere.length} agent${agentsHere.length === 1 ? "" : "s"}${room.remote ? " · hosted elsewhere" : room.guests.length ? ` · ${room.guests.length} guest${room.guests.length === 1 ? "" : "s"}` : ""}`;
 
   return (
@@ -385,6 +389,7 @@ export function RoomView({
             </span>
           ))}
           {room.members.length > 7 ? <span className="roomHeadMore">+{room.members.length - 7}</span> : null}
+          {pendingInvites.length ? <span className="roomHeadPending" title={`${pendingInvites.length} invite${pendingInvites.length === 1 ? "" : "s"} still open — see Members`}>✉ {pendingInvites.length}</span> : null}
         </div>
         <div className="roomHeadActions">
           <button data-on={panel === "members" ? "1" : "0"} onClick={() => setPanel(panel === "members" ? null : "members")} title="Members">Members</button>
@@ -537,6 +542,10 @@ export function RoomView({
         {panel === "members" ? (
           <aside className="roomPanel">
             <div className="roomPanelHead"><strong>Members</strong><button onClick={() => setPanel(null)} aria-label="Close">×</button></div>
+            {/* Who is IN versus who is merely invited was one undifferentiated
+                list (field report 2026-10-26). Three labelled groups now:
+                people in the room, agents in the room, invites still open. */}
+            <div className="roomPanelGroup">People <em>{people.length}</em></div>
             {people.map((p) => (
               <div key={memberKey(p)} className="roomMember">
                 <MemberAvatar member={p} agents={agents} size={30} />
@@ -544,6 +553,7 @@ export function RoomView({
                 {!room.remote && p.home !== "local" ? <button className="roomGhost" onClick={() => onRemoveGuest(p.id)} title="Remove them and their agents">Remove</button> : null}
               </div>
             ))}
+            <div className="roomPanelGroup">Agents <em>{agentsHere.length}</em></div>
             {agentsHere.map((a) => {
               const ownerName = a.owner ? room.members.find((x) => memberKey(x) === a.owner)?.name : undefined;
               const own = a.home === "local";
@@ -572,6 +582,18 @@ export function RoomView({
                   ))}
                 </div>
               </div>
+            ) : null}
+            {!room.remote && pendingInvites.length ? (
+              <>
+                <div className="roomPanelGroup">Invited · not in yet <em>{pendingInvites.length}</em></div>
+                {pendingInvites.map((inv) => (
+                  <div key={inv.code} className="roomMember roomMemberPending">
+                    <span className="roomPendingMark" aria-hidden="true">✉</span>
+                    <span className="roomMemberText"><strong>{inv.label || "Open invite link"}</strong><em>sent {roomTime(inv.createdAt)} · waiting for them to join</em></span>
+                    <button className="roomGhost roomDangerText" onClick={() => onRevokeInvite(inv.code)} title="Retract this invite — the link stops working">Retract</button>
+                  </div>
+                ))}
+              </>
             ) : null}
             {!room.remote ? <button className="agentPrimary roomInviteBtn" onClick={onInvite}>Invite a person</button> : null}
           </aside>
@@ -837,7 +859,8 @@ export function RoomJoinSheet({ agents, photos, error, busy, initialLink, intro,
   );
 }
 
-export function RoomInviteSheet({ room, link, error, busy, onMint, onClose }: { room: RoomVm; link?: string; error?: string; busy?: boolean; onMint: () => void; onClose: () => void }) {
+export function RoomInviteSheet({ room, link, error, busy, onMint, onRevoke, onClose }: { room: RoomVm; link?: string; error?: string; busy?: boolean; onMint: () => void; onRevoke: (code: string) => void; onClose: () => void }) {
+  const pending = room.invites.filter((i) => !i.usedBy);
   const [copied, setCopied] = useState(false);
   useEffect(() => { if (!link && !error && !busy) onMint(); /* eslint-disable-line react-hooks/exhaustive-deps */ }, []);
   const copy = async () => {
@@ -861,6 +884,18 @@ export function RoomInviteSheet({ room, link, error, busy, onMint, onClose }: { 
           </div>
         ) : busy ? <p className="roomPanelWhy">Minting the link…</p> : null}
         {error ? <p className="agentSheetErr">{error}</p> : null}
+        {pending.length ? (
+          <div className="agentField">
+            <span>Still open · {pending.length}</span>
+            {pending.map((inv) => (
+              <div key={inv.code} className="roomGuestRow">
+                <strong>{inv.label || "Invite link"}</strong>
+                <em>sent {roomTime(inv.createdAt)} · nobody has joined with it</em>
+                <button className="roomGhost roomDangerText" onClick={() => onRevoke(inv.code)} title="Retract — the link stops working">Retract</button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {room.guests.length ? (
           <div className="agentField">
             <span>Already in</span>

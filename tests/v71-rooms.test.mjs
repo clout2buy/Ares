@@ -238,6 +238,25 @@ test("rooms: a seat per agent, turns carry the catch-up, replies post back (tool
   rooms.stop();
 });
 
+test("rooms: a pending invite can be retracted; a used one cannot (that is a guest)", async () => {
+  const h = await home();
+  const ws = await home();
+  const { agents, rooms, events } = harness(h, ws);
+  await agents.load();
+  await rooms.load();
+  const r = await rooms.create({ name: "Agency" });
+  const one = await rooms.invite(r.id, "for cupid");
+  const two = await rooms.invite(r.id);
+  assert.equal(rooms.get(r.id).invites.filter((i) => !i.usedBy).length, 2);
+  events.length = 0;
+  const after = await rooms.revokeInvite(r.id, one.code);
+  assert.deepEqual(after.invites.map((i) => i.code), [two.code], "the retracted link is gone, the other stays");
+  assert.ok(events.some((e) => e.type === "room_changed" && e.room.invites.length === 1), "the desktop hears the change");
+  assert.equal((await rooms.revokeInvite(r.id, "nope")).invites.length, 1, "an unknown code is a no-op");
+  const wired = rooms.wire(after);
+  assert.equal(wired.invites.length, 1, "invites ride the wire for the members panel");
+});
+
 test("rooms: guests join by invite on their own token, speak only as themselves, and the host drains it", async () => {
   const h = await home();
   const ws = await home();

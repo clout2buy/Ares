@@ -1331,3 +1331,64 @@
 .ares.ares.ares[data-style="modern"][data-surface="messages"] :is(.mdlHero .ghost, .modelSearch input, .modelSearch, .mdlControls select, .mdlControls button) { color: var(--text); background: var(--g-hover); border-color: var(--line); }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlHero, .ares.ares.ares[data-style="modern"][data-surface="messages"] .mdlRail { border-color: var(--line); }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .palette.reasoningPop { background: var(--g-window); border-color: var(--line); box-shadow: var(--g-shadow); }
+
+/* ── field-report batch, 2026-10-26 ─────────────────────────────────── */
+/* rooms used to inherit the dark Messages-skin layers (near-black head and
+   composer on a light glass page). They are glass panes now, like the chat. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHead,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomComposer {
+  margin: 10px 10px 0; padding: 10px 14px; border-radius: 20px;
+  border: var(--g-rim); background: var(--g-fill-strong); box-shadow: var(--g-shadow);
+  backdrop-filter: var(--g-blur); -webkit-backdrop-filter: var(--g-blur);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomComposer { margin: 0 10px 10px; padding: 10px 12px 12px; border-top: var(--g-rim); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHead h2 { color: var(--text-hi); font: 700 16px/1.2 var(--display); letter-spacing: -0.02em; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHead span { color: var(--muted); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHeadActions button { color: var(--muted); background: var(--g-soft); border: var(--g-rim); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHeadActions button:hover,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHeadActions button[data-on="1"] { color: var(--text-hi); background: var(--g-fill-strong); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomThread { background: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomBoard,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomPanel {
+  margin: 10px 10px 10px 0; border-radius: 20px; border: var(--g-rim); border-left: var(--g-rim);
+  background: var(--g-fill); box-shadow: var(--g-shadow); backdrop-filter: var(--g-blur); -webkit-backdrop-filter: var(--g-blur);
+  color: var(--text);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomJob { background: var(--g-soft); border: var(--g-rim); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomBubbleTheirs {
+  color: var(--text-hi); border: var(--g-rim); background: var(--g-fill-strong);
+  backdrop-filter: var(--g-blur); -webkit-backdrop-filter: var(--g-blur); box-shadow: var(--g-shadow);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomBubbleMine { background: var(--g-orange); border: 1px solid color-mix(in srgb, var(--g-acc) 40%, rgba(255, 255, 255, 0.8)); box-shadow: var(--g-orange-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomComposer textarea { color: var(--text-hi); background: var(--g-soft); border: var(--g-rim); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomMember .roomGhost { color: var(--muted); background: var(--g-soft); border: var(--g-rim); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomMember .roomGhost:hover { color: var(--text-hi); background: var(--g-fill-strong); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomPanelGroup { color: var(--faint); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomPendingMark,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomHeadPending { color: var(--muted); border-color: rgba(var(--g-acc-rgb), 0.45); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomInviteLink { background: var(--g-soft); border: var(--g-rim); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .roomInviteLink code { color: var(--text-hi); }
+/* "latest": a round arrow at the bottom-right, where the eye looks for it */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stage > .jumpDock { justify-content: flex-end; padding-right: 22px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stage > .jumpDock .jumpLatest {
+  width: 40px; height: 40px; padding: 0; margin: 0; border-radius: 50%;
+  display: inline-grid; place-items: center; font: 700 18px/1 var(--font); color: var(--text-hi);
+  background: var(--g-fill-strong); border: var(--g-rim); box-shadow: var(--g-shadow); backdrop-filter: var(--g-blur); -webkit-backdrop-filter: var(--g-blur);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stage > .jumpDock .jumpLatest:hover { background: var(--g-solid); filter: none; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stage > .jumpDock .jumpLatest .jumpWord { display: none; }
+/* copy button and header meters in glass */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msgCopy { color: var(--muted); background: var(--g-fill-strong); border: var(--g-rim); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .msgCopy:hover { color: var(--text-hi); background: var(--g-solid); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .turn.assistant .turnBody > .msgCopy { top: 4px; right: 4px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .turn.user .msgCopy { top: 4px; left: -30px; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageUsage,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageBg { color: var(--muted); background: var(--g-soft); border: var(--g-rim); font-family: var(--font); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageUsage b { color: var(--text-hi); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageUsage:hover,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageBg:hover { color: var(--text-hi); background: var(--g-fill-strong); box-shadow: var(--g-shadow); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .stageUsageMeter { background: rgba(20, 24, 34, 0.12); }
+/* agent sheet: the sticky Save row matches the glass sheet's padding and fill */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetFoot { bottom: -18px; margin: 4px -24px -18px; padding: 12px 24px 16px; background: var(--g-solid); border-top: 1px solid var(--line); border-radius: 0 0 30px 30px; }
+/* the plan's cancelled mark */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .todoPanel li[data-status="cancelled"] { text-decoration-color: rgba(20, 24, 34, 0.3); }

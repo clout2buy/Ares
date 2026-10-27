@@ -187,11 +187,23 @@ export class OllamaCloudPool {
   }
 
   /** Probe the host for available models (plain-name normalized). [] if unreachable. */
+  /** Last /api/tags auth rejection (401/402/403), cleared on the next success. */
+  private lastAuthError: string | null = null;
   async listModels(signal?: AbortSignal): Promise<string[]> {
     try {
       const headers: Record<string, string> = { Accept: "application/json" };
       if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
       const res = await this.fetchImpl(`${this.host}/api/tags`, { headers, ...(signal ? { signal } : {}) });
+      // A key the service rejects (401 invalid, 402/403 billing — "your
+      // subscription payment is past due") must read as "the KEY is bad",
+      // not "no models here": the preflight turns it into one line that
+      // names the fix instead of a turn that dies on the same status.
+      if (res.status === 401 || res.status === 402 || res.status === 403) {
+        const body = await res.text().then((t) => t.replace(/\s+/g, " ").trim().slice(0, 160)).catch(() => "");
+        this.lastAuthError = `Ollama returned ${res.status}${body ? `: ${body}` : ""}`;
+        return [];
+      }
+      this.lastAuthError = null;
       if (!res.ok) return [];
       const json = (await res.json()) as { models?: Array<{ name?: string }> };
       return (json.models ?? []).map((m) => m.name ?? "").filter((n) => n.length > 0);
@@ -212,14 +224,17 @@ export class OllamaCloudPool {
     availableModels: string[];
     slots: Array<{ name: SlotName; model: string; present: boolean }>;
     cloudDirect: boolean;
+    /** The key was rejected by /api/tags (401/402/403) — set only then. */
+    authError?: string;
   }> {
     const available = await this.listModels();
     const reachable = available.length > 0 || (await this.ping());
+    const authError = this.lastAuthError;
     const slots = (Object.keys(Object.fromEntries(this.slots)) as SlotName[]).map((name) => {
       const model = this.modelFor(name);
       return { name, model, present: this.hasModel(available, model) };
     });
-    return { reachable, host: this.host, availableModels: available, slots, cloudDirect: this.cloudDirect };
+    return { reachable, host: this.host, availableModels: available, slots, cloudDirect: this.cloudDirect, ...(authError ? { authError } : {}) };
   }
 
   private async ping(): Promise<boolean> {

@@ -30,7 +30,12 @@ export const POSES = [
 export type PoseName = (typeof POSES)[number]["name"];
 
 const MODEL = () => process.env.ARES_AVATAR_IMAGE_MODEL?.trim() || "google/gemini-3.1-flash-image";
-const dataUrl = (bytes: Buffer) => `data:image/png;base64,${bytes.toString("base64")}`;
+/** Sniff the real type: uploads are PNG (alpha kept) or JPEG (photos). */
+const mimeOf = (bytes: Buffer): string =>
+  bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 ? "image/jpeg"
+  : bytes.length > 11 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP" ? "image/webp"
+  : "image/png";
+const dataUrl = (bytes: Buffer) => `data:${mimeOf(bytes)};base64,${bytes.toString("base64")}`;
 
 /** Nano Banana through OpenRouter's chat endpoint: text plus reference images in, one image out. */
 async function nanoBanana(key: string, prompt: string, images: Buffer[] = []): Promise<Buffer> {

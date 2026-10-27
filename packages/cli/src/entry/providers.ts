@@ -1,6 +1,6 @@
 // Extracted from entry.ts — providers.
 
-import { modelLikelyHasVision, MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, type MoaMember, type Provider, resolveOllamaHost } from "@ares/core";
+import { modelLikelyHasVision, MockEchoProvider, OpenAIResponsesProvider, OpenRouterProvider, DeepSeekProvider, AnthropicProvider, DEFAULT_ANTHROPIC_MODEL, OllamaCloudPool, DEFAULT_OLLAMA_SLOTS, OLLAMA_CLOUD_MODELS, fetchOllamaLibraryModels, fetchDeepSeekModels, fetchOpenRouterModels, fetchAnthropicModels, fetchOllamaCloudModels, ollamaCloudHint, sameOllamaModel, toCloudDirectModelId, fetchCodexModels, loadAuthToken, MoaProvider, fetchKimiModels, resolveKimiAccessToken, forceRefreshKimiAccessToken, resolveAnthropicAccessToken, type MoaMember, type Provider, resolveOllamaHost } from "@ares/core";
 import { promises as fsp } from "node:fs";
 import nodeOs from "node:os";
 import nodePath from "node:path";
@@ -9,6 +9,7 @@ import path from "node:path";
 import { type SubModelPool } from "@ares/tools";
 import { buildReportBody } from "./daemon/report.js";
 import { withLocalProviderDiagnosis } from "./localProviderDiagnosis.js";
+import { preflightAnthropicCredential, preflightOpenRouterCredential } from "./providerCredentialGate.js";
 import { loadUiSettings, type UiSettings } from "../uiSettings.js";
 
 // Ares talks to the LOCAL Ollama daemon (native /api/chat) by default — it
@@ -806,12 +807,18 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
 
   if (preferred === "openrouter") {
     const model = requestedModel ?? settings.lastOpenRouterModel ?? "openai/gpt-4o-mini";
+    const openRouterKey = settings.openRouterKey ?? "";
     return {
       // Empty key → the provider yields a clear no_auth error the UI surfaces.
-      provider: new OpenRouterProvider({ apiKey: settings.openRouterKey ?? "", model }),
+      provider: new OpenRouterProvider({ apiKey: openRouterKey, model }),
       model,
       source: explicit ? "explicit:openrouter" : "settings:openrouter",
       family: "openrouter",
+      // A keyless or rejected OpenRouter must fail the PREFLIGHT, so the
+      // failover ladder skips the rung instead of spending a turn on it
+      // (field report 2026-10-26: "No OpenRouter API key" as a red bubble on
+      // every prompt, third in a row behind two other dead keys).
+      preflight: () => preflightOpenRouterCredential({ key: openRouterKey }),
     };
   }
 
@@ -939,6 +946,14 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       model,
       source: explicit ? "explicit:anthropic" : "settings:anthropic",
       family: "anthropic",
+      // Same credential order as the provider itself; a Claude sign-in
+      // (OAuth) counts as configured. An invalid key is caught HERE, by one
+      // cheap GET, instead of by a 401 after the turn already left the pin.
+      preflight: async () => {
+        const key = settings.anthropicKey || process.env.ARES_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || "";
+        const oauth = key ? false : Boolean(await resolveAnthropicAccessToken().catch(() => null));
+        return preflightAnthropicCredential({ key, oauth });
+      },
     };
   }
 
@@ -986,6 +1001,12 @@ export async function selectProvider(flags: Map<string, string>): Promise<Provid
       family: "ollama",
       preflight: async () => {
         const health = await pool.health();
+        if (health.authError) {
+          return {
+            ok: false,
+            error: `${health.authError}. The Ollama Cloud key in Settings → API Keys was rejected — fix billing at ollama.com or paste a fresh key.`,
+          };
+        }
         if (!health.reachable) {
           return {
             ok: false,

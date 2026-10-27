@@ -1998,6 +1998,9 @@ function App() {
           pushLog(`[garrison] ${e.type}`);
           if (e.type === "provider_key_set" && e.provider) {
             setKeyStatus((current) => ({ ...current, [e.provider!]: e.hasKey === true }));
+            // The Keys tab's usage card sat at "Loading usage…" after a paste
+            // until ↻ — the plan limits are only fetched on boot otherwise.
+            if (e.hasKey === true) daemonCmd({ type: "provider_usage", force: true });
           }
           if (e.type === "skill_toggle_set") daemonCmd({ type: "skills_list" });
           return true;
@@ -3495,7 +3498,14 @@ function App() {
   }, [active?.id]);
   const jumpToLatest = useCallback(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el) {
+      // Instant: the scroller's smooth behaviour would animate a long thread
+      // for seconds; the button means "take me to the end, now".
+      const prior = el.style.scrollBehavior;
+      el.style.scrollBehavior = "auto";
+      el.scrollTop = el.scrollHeight;
+      el.style.scrollBehavior = prior;
+    }
     setPinned(true);
   }, []);
 
@@ -4352,6 +4362,21 @@ function App() {
   };
 
   // ── floating pill: condense Ares to an always-on-top mic bar ───────────────
+  // The maximize dot went through a Rust command that swallowed its error
+  // (field report 2026-10-26: "maximize button doesn't work"). The window
+  // API is granted for toggle-maximize; a window left non-resizable (pill
+  // mode) refuses to maximize on Windows, so resizable is restored first,
+  // and the Rust command is the fallback — with the failure logged.
+  const toggleMaximize = useCallback(async () => {
+    try {
+      const w = getCurrentWindow();
+      await w.setResizable(true).catch(() => undefined);
+      await w.toggleMaximize();
+    } catch (err) {
+      console.warn("toggleMaximize via window API failed, trying the native command", err);
+      await invoke("ares_window_toggle_maximize").catch((e2) => console.warn("ares_window_toggle_maximize failed", e2));
+    }
+  }, []);
   const PILL_W = 276;
   const PILL_H = 42;
   const enterPill = useCallback(async () => {
@@ -4519,6 +4544,25 @@ function App() {
   });
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
   const activeAgent = agents.find((a) => a.id === agentIdOf(active?.id));
+  // Provider plan usage for the header: the family this chat runs on, as
+  // the provider's own account meter (the same rows the Keys tab shows).
+  const headerUsage = useMemo(() => {
+    const family = (activeAgent?.provider ?? prefs.provider ?? "").toLowerCase();
+    const view = providerUsage?.providers.find((p) => p.provider === family);
+    if (!view || view.windows.length === 0) return null;
+    const worstWindow = view.windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
+    return { view, worst: Math.min(1, Math.max(0, worstWindow.utilization)), window: worstWindow.label };
+  }, [activeAgent?.provider, prefs.provider, providerUsage]);
+  // Ask for plan usage when the chat's provider changes and the reading is
+  // older than ten minutes — boot-only fetching left the header empty.
+  useEffect(() => {
+    const family = (activeAgent?.provider ?? prefs.provider ?? "").toLowerCase();
+    if (!family || !active) return;
+    const stale = !providerUsage || Date.now() - providerUsage.at > 10 * 60_000;
+    if (stale) daemonCmd({ type: "provider_usage" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAgent?.provider, prefs.provider, active?.id]);
+  const activeBgRunning = active ? (bgJobs[active.id] ?? []).filter((j) => j.status === "running").length : 0;
   const previewOf = (s: SessionVm | undefined): string => {
     if (!s) return "No chats yet";
     for (let i = s.items.length - 1; i >= 0; i--) {
@@ -4955,7 +4999,7 @@ function App() {
           onExport={active?.id ? () => void exportSessionLog() : undefined}
           onSettings={() => setSettingsOpen(true)}
           onMinimize={() => { void getCurrentWindow().minimize().catch(() => null); }}
-          onMaximize={() => void invoke("ares_window_toggle_maximize").catch(() => null)}
+          onMaximize={() => void toggleMaximize()}
           onClose={() => void invoke("ares_window_close").catch(() => null)}
         />
       ) : (
@@ -5106,7 +5150,7 @@ function App() {
           </button>
           {native ? (
             <>
-            <button aria-label="maximize" onClick={() => void invoke("ares_window_toggle_maximize").catch(() => null)}>
+            <button aria-label="maximize" onClick={() => void toggleMaximize()}>
               <svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1" /></svg>
             </button>
             <button aria-label="close" className="winClose" onClick={() => void invoke("ares_window_close").catch(() => null)}>
@@ -5429,6 +5473,30 @@ function App() {
               <em>{prefs.uiEffect?.label ?? active.activity ?? "working"}</em>
             </span>
           ) : null}
+          <span className="stageHeadMeters">
+            {headerUsage ? (
+              <button
+                className="stageUsage"
+                data-tone={headerUsage.worst >= 0.9 ? "bad" : headerUsage.worst >= 0.7 ? "warn" : "ok"}
+                title={`${headerUsage.view.label}${headerUsage.view.plan ? ` · ${headerUsage.view.plan}` : ""}: ${headerUsage.view.windows.map((w) => `${w.label} ${Math.round(w.utilization * 100)}%`).join(" · ")}${headerUsage.view.extra ? ` · $${headerUsage.view.extra.cost.toFixed(2)} ${headerUsage.view.extra.note ?? "extra"}` : ""} — click for details`}
+                onClick={() => { setContextPopOpen((v) => !v); daemonCmd({ type: "provider_usage" }); }}
+              >
+                <b>{headerUsage.view.label}</b>
+                <i className="stageUsageMeter"><em style={{ width: `${Math.round(headerUsage.worst * 100)}%` }} /></i>
+                <span>{Math.round(headerUsage.worst * 100)}%<small> {headerUsage.window}</small></span>
+              </button>
+            ) : null}
+            {activeBgRunning > 0 ? (
+              <button
+                className="stageBg"
+                title={`${activeBgRunning} process${activeBgRunning === 1 ? "" : "es"} running in the background for this chat — click to see and stop them`}
+                onClick={() => { setForge((f) => ({ ...f, open: true, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); }}
+              >
+                <i className="stageBgDot" aria-hidden="true" />
+                <span>{activeBgRunning} running</span>
+              </button>
+            ) : null}
+          </span>
         </header>
 
         {activeRoom && view === "chat" ? (
@@ -5455,6 +5523,7 @@ function App() {
             onRename={(patch) => daemonCmd({ type: "room_update", roomId: activeRoom.id, room: patch })}
             onDelete={() => daemonCmd({ type: "room_delete", roomId: activeRoom.id })}
             onRemoveGuest={(guestId) => daemonCmd({ type: "room_guest_remove", roomId: activeRoom.id, guestId })}
+            onRevokeInvite={(code) => daemonCmd({ type: "room_invite_revoke", roomId: activeRoom.id, code })}
             onOpenSeat={(sessionId) => {
               // A seat is a real session: open it like any chat (history loads on demand).
               if (!sessions.some((s) => s.id === sessionId)) setSessions((prev) => [{ ...freshSession(), id: sessionId, title: `${activeRoom.name} · seat`, loaded: false }, ...prev]);
@@ -5682,8 +5751,8 @@ function App() {
               sticky pill inside the transcript sat on top of the words. */}
           {!pinned ? (
             <div className="jumpDock">
-              <button className="jumpLatest" onClick={jumpToLatest} title="jump to latest">
-                ↓ latest
+              <button className="jumpLatest" onClick={jumpToLatest} title="Jump to the latest message" aria-label="Jump to the latest message">
+                <span className="jumpArrow" aria-hidden="true">↓</span><span className="jumpWord"> latest</span>
               </button>
             </div>
           ) : null}
@@ -5753,6 +5822,7 @@ function App() {
         {/* Kept MOUNTED on HELM (hidden, not unmounted) — unmounting destroyed
             the draft text and pending attachments every time the view flipped. */}
         <Composer
+          sessionId={active?.id ?? ""}
           agentName={activeAgent?.name ?? "Ares"}
             hidden={view === "helm" || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || Boolean(activeRoom) || (!activeAgent && !roomSeatIds.has(active?.id ?? ""))}
             busy={active?.busy ?? false}
@@ -6445,6 +6515,7 @@ function App() {
             busy={roomSheet.busy}
             error={roomError}
             onMint={() => { setRoomError(undefined); setRoomSheet({ kind: "invite", roomId: room.id, busy: true }); daemonCmd({ type: "room_invite", roomId: room.id }); }}
+            onRevoke={(code) => daemonCmd({ type: "room_invite_revoke", roomId: room.id, code })}
             onClose={() => { setRoomSheet(null); setRoomError(undefined); }}
           />
         );
@@ -9390,9 +9461,13 @@ const Composer = React.memo(function Composer({
   onRoutingChip,
   slashActions,
   footer,
+  sessionId,
 }: {
   /** display:none instead of unmount — preserves the draft across view flips. */
   hidden?: boolean;
+  /** Whose draft this is. The composer is one mounted instance for every
+   *  chat, so the draft is stashed per session and swapped on change. */
+  sessionId: string;
   busy: boolean;
   /** Who this chat talks to — the composer addresses them by name. */
   agentName?: string;
@@ -9447,6 +9522,28 @@ const Composer = React.memo(function Composer({
   const submittingRef = useRef(false);
   const cancellingRef = useRef(cancelling);
   cancellingRef.current = cancelling;
+  // One composer, many chats: the draft typed into agent A's chat used to
+  // follow the user into agent B's chat and could be sent there (field
+  // report 2026-10-26). Each session's unsent text and attachments are
+  // stashed when the user leaves it and put back when they return.
+  const draftStore = useRef<Map<string, { text: string; attachments: Array<{ name: string; dataUrl: string; path?: string; size?: number }> }>>(new Map());
+  const draftOwner = useRef(sessionId);
+  const textRef = useRef(text);
+  textRef.current = text;
+  useEffect(() => {
+    if (draftOwner.current === sessionId) return;
+    const leaving = draftOwner.current;
+    if (textRef.current.trim() || attachmentsRef.current.length) draftStore.current.set(leaving, { text: textRef.current, attachments: attachmentsRef.current });
+    else draftStore.current.delete(leaving);
+    draftOwner.current = sessionId;
+    const next = draftStore.current.get(sessionId);
+    setText(next?.text ?? "");
+    attachmentsRef.current = next?.attachments ?? [];
+    setAttachmentsState(attachmentsRef.current);
+    setSlashSel(0);
+    setSlashDismissed(false);
+    if (ref.current) ref.current.style.height = "auto";
+  }, [sessionId]);
   const restoredDraftIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     const pending = recoverableDrafts.filter((draft) => !restoredDraftIds.current.has(draft.inputId));
@@ -10258,6 +10355,7 @@ const ItemView = React.memo(function ItemView({
           ) : null}
           {item.text ? <div className="bubbleText">{item.text}</div> : null}
         </div>
+        {item.text ? <CopyMessageButton text={item.text} /> : null}
       </div>
     );
   }
@@ -10313,6 +10411,7 @@ const ItemView = React.memo(function ItemView({
         ) : null}
         {item.thinking ? <ThinkingView text={item.thinking} /> : null}
         {item.text ? <RichContent text={item.text} /> : null}
+        {item.text && !item.streaming ? <CopyMessageButton text={item.text} /> : null}
         </div>
       </div>
     );
@@ -10601,28 +10700,65 @@ function BackgroundPanel({
   );
 }
 
+/** Copy one message's text. Shown on hover at the bubble's corner; says
+ *  "Copied" for a moment so the click is seen to land. */
+function CopyMessageButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className="msgCopy"
+      data-copied={copied ? "1" : "0"}
+      title={copied ? "Copied" : "Copy message"}
+      aria-label="Copy message"
+      onClick={async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1400);
+        } catch {
+          /* clipboard blocked */
+        }
+      }}
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m3 8.5 3 3 7-7" /></svg>
+      ) : (
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6" /><path d="M10.5 5.5V3.6A1.6 1.6 0 0 0 8.9 2H3.6A1.6 1.6 0 0 0 2 3.6v5.3a1.6 1.6 0 0 0 1.6 1.6h1.9" /></svg>
+      )}
+    </button>
+  );
+}
+
 function TodoPanel({ todos }: { todos: SessionVm["todos"] }) {
   const [open, setOpen] = useState(true);
   const done = todos.filter((t) => t.status === "completed").length;
+  const cancelled = todos.filter((t) => t.status === "cancelled").length;
   const current = todos.find((t) => t.status === "in_progress");
+  // A cancelled step is not pending work: it leaves the denominator, and it
+  // is drawn with its own mark (an empty ring read as "not started" for hours
+  // — field report 2026-10-26).
+  const planned = todos.length - cancelled;
   return (
     <div className="todoPanel" data-open={open ? "1" : "0"}>
       <button className="todoHead" onClick={() => setOpen(!open)}>
         <span className="todoTitle">PLAN</span>
         <span className="todoProgress">
-          <i style={{ width: `${todos.length ? Math.round((done / todos.length) * 100) : 0}%` }} />
+          <i style={{ width: `${planned ? Math.round((done / planned) * 100) : 0}%` }} />
         </span>
-        <span className="todoCount">
-          {done}/{todos.length}
+        <span className="todoCount" title={cancelled ? `${done} done of ${planned} planned · ${cancelled} cancelled` : undefined}>
+          {done}/{planned}{cancelled ? <em className="todoCancelledCount"> · {cancelled} ✕</em> : null}
         </span>
         {!open && current ? <span className="todoCurrent">{current.activeForm || current.content}</span> : null}
       </button>
       {open ? (
         <ul>
           {todos.map((t) => (
-            <li key={t.id} data-status={t.status}>
-              <i />
+            <li key={t.id} data-status={t.status} title={t.status === "cancelled" ? "cancelled — dropped on purpose, not pending" : undefined}>
+              <i aria-hidden="true" />
               <span>{t.status === "in_progress" ? t.activeForm || t.content : t.content}</span>
+              {t.status === "cancelled" ? <em className="todoStateTag">cancelled</em> : null}
             </li>
           ))}
         </ul>

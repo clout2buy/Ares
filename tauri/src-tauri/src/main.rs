@@ -994,7 +994,7 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // Rooms: group chats of people + agents (daemon/rooms.ts).
     "rooms_list", "room_create", "room_update", "room_delete", "room_post", "room_history",
     "room_agent_add", "room_agent_remove", "room_agent_mute", "room_invite", "room_join",
-    "room_job", "room_notes", "room_me", "room_guest_remove",
+    "room_job", "room_notes", "room_me", "room_guest_remove", "room_invite_revoke",
     // People directory: usernames, lookup, invites (daemon/directory.ts).
     "directory_status", "directory_claim", "directory_profile", "directory_search",
     "directory_invite", "directory_dm", "directory_group", "directory_ack", "directory_url", "directory_user",

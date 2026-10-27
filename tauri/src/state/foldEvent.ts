@@ -102,6 +102,9 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
 
   switch (e.type) {
     case "turn_start": {
+      // A resumed turn (the daemon's failover rescued it on a backup): the
+      // parked handback is void — the message is being answered.
+      session.pendingHandback = undefined;
       session.busy = true;
       session.cancelling = false;
       session.activity = "marshalling";
@@ -786,6 +789,13 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // silently. (Field log 2026-10-25: four "Continue"s in a row into a
       // chat whose turns were dying with nothing on screen.) The message goes
       // back to the draft and a notice says so; an auth death says what to fix.
+      // NOT handed back here: the daemon's failover ladder may still rescue
+      // this very turn (it resumes on a backup provider, which arrives as a
+      // fresh turn_start). Handing the message back at THIS boundary told
+      // the user "back in the draft" while the backup was already answering
+      // (field report 2026-10-26, three such notices per prompt). The
+      // handback is parked and lands at turn_settled — the daemon's real
+      // end of the turn — unless a resumed turn_start cancels it.
       if (e.status === "failed") {
         const lastUserIdx = items.reduce((found, it, i) => (it.kind === "user" ? i : found), -1);
         const after = lastUserIdx >= 0 ? items.slice(lastUserIdx + 1) : [];
@@ -795,24 +805,16 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
         const explained = after.some((it) => it.kind === "notice" && it.tone === "bad");
         const lastUser = lastUserIdx >= 0 ? (items[lastUserIdx] as Extract<Item, { kind: "user" }>) : null;
         if (lastUser?.inputId && !producedOutput && (lastUser.text.trim() || lastUser.images?.length)) {
-          const queued = session.recoverableDrafts ?? [];
-          if (!queued.some((draft) => draft.inputId === lastUser.inputId)) {
-            session.recoverableDrafts = [...queued, {
-              inputId: lastUser.inputId,
-              text: lastUser.text,
-              ...(lastUser.images?.length ? { images: [...lastUser.images] } : {}),
-            }];
-            items.push({
-              kind: "notice",
-              key: nextKey(),
-              text: session.authFailedTurn
-                ? "That send failed on authentication before the model saw it — your message is back in the draft. Fix the key or sign-in, then press send."
-                : explained
-                  ? "That one didn't go through — your message is back in the draft. Press send to try again."
-                  : "That one didn't go through: the model never answered. Your message is back in the draft — press send to try again, or pick another model under the input bar.",
-              tone: "warn",
-            });
-          }
+          session.pendingHandback = {
+            inputId: lastUser.inputId,
+            text: lastUser.text,
+            ...(lastUser.images?.length ? { images: [...lastUser.images] } : {}),
+            notice: session.authFailedTurn
+              ? "That send failed on authentication before the model saw it — your message is back in the draft. Fix the key or sign-in, then press send."
+              : explained
+                ? "That one didn't go through — your message is back in the draft. Press send to try again."
+                : "That one didn't go through: the model never answered. Your message is back in the draft — press send to try again, or pick another model under the input bar.",
+          };
         }
       }
       session.authFailedTurn = undefined;
@@ -838,12 +840,28 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       }
       break;
     }
-    case "turn_settled":
+    case "turn_settled": {
       session.preparing = false;
       session.busy = e.continuing === true;
       session.cancelling = false;
       session.activity = e.continuing ? "continuing queued correction" : undefined;
+      // The failed turn really is over (no backup resumed it): hand the
+      // message back now. See turn_end.
+      const handback = session.pendingHandback;
+      session.pendingHandback = undefined;
+      if (handback) {
+        const queued = session.recoverableDrafts ?? [];
+        if (!queued.some((draft) => draft.inputId === handback.inputId)) {
+          session.recoverableDrafts = [...queued, {
+            inputId: handback.inputId,
+            text: handback.text,
+            ...(handback.images?.length ? { images: [...handback.images] } : {}),
+          }];
+          items.push({ kind: "notice", key: nextKey(), text: handback.notice, tone: "warn" });
+        }
+      }
       break;
+    }
     case "desktop_pending_input_cancelled": {
       // This ordinary input existed only in Desktop's restart buffer. Remove
       // its exact transcript bubble and hand the clean user-authored payload
@@ -876,6 +894,8 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       break;
     case "interrupt_settled":
     case "interrupted_by_user":
+      // A stop the user asked for: nothing to hand back as "didn't go through".
+      session.pendingHandback = undefined;
       session.busy = false;
       session.cancelling = false;
       session.steerQueued = 0;

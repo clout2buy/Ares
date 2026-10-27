@@ -84,6 +84,26 @@ test("aggregates turn_end and auxiliary usage across sessions", async () => {
   }
 });
 
+test("ollama turns are counted under the 'ollama' family, not the pool's slot adapter name", async () => {
+  // Field report 2026-10-26: the Settings usage bar for Ollama stayed empty.
+  // Session meta and turn_end stamp the ADAPTER name ("ollama-cloud:reasoner");
+  // the rollup must key by family so the picker's lookup ("ollama") matches
+  // and local Ollama costs $0 instead of "no price".
+  const workspace = makeWorkspace();
+  try {
+    const a = makeSession(workspace, "sess_o", { provider: "ollama-cloud:reasoner", model: "glm-5.3-flash" });
+    writeFileSync(a, turnEnd(300, 40, { provider: "ollama-cloud:reasoner", model: "glm-5.3-flash" }) + turnEnd(100, 10), "utf8");
+    const stats = await daemonUsageStats(workspace, 14);
+    const providers = new Map(stats.providers.map((p) => [p.provider, p]));
+    assert.equal(providers.get("ollama")?.tokensIn, 400);
+    assert.equal(providers.get("ollama")?.calls, 2);
+    assert.equal(providers.has("ollama-cloud:reasoner"), false);
+    assert.ok(stats.models.every((m) => m.provider === "ollama"), JSON.stringify(stats.models));
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("appended events are folded in on the next scan (append-only cache)", async () => {
   const workspace = makeWorkspace();
   try {

@@ -221,6 +221,10 @@ export interface SessionVm {
   /** Rejected/cancelled steers return here until the composer merges them back
    * into the owner's draft. Exact IDs prevent double restoration. */
   recoverableDrafts?: Array<{ inputId: string; text: string; images?: string[] }>;
+  /** A failed turn's message, parked between turn_end(failed) and
+   *  turn_settled: lands in recoverableDrafts at settle unless a resumed
+   *  turn_start (failover rescue) voids it. */
+  pendingHandback?: { inputId: string; text: string; images?: string[]; notice: string };
   /** Turn-scoped: an auth-class provider error (401/403/no_auth) was seen this
    * turn. If the turn then FAILS with no model output, the user's message goes
    * back to the composer — a field user retyped the same prompt three times

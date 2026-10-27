@@ -3379,6 +3379,25 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       // The desktop can now SEE this: what is running, what was suspended when
       // the app closed, and one click each to stop or resume. Before this, the
       // only surface for a runaway background job was Task Manager.
+      if (command.type === "background_stop_all") {
+        // "Stop all": everything the agent left running — launched or
+        // adopted — for one chat, or (all:true) for every resident chat.
+        // The one-click answer to the field report's orphaned services.
+        const targets = command.all === true
+          ? [...sessions.values()]
+          : [await resolveEntry(command.sessionId).catch(() => undefined)].filter((e): e is DaemonEntry => Boolean(e));
+        let stopped = 0;
+        for (const entry of targets) {
+          try {
+            stopped += await entry.live.shellRegistry.stopAllForSession(entry.live.session.meta.id);
+          } catch {
+            // one stubborn tree must not stop the rest
+          }
+        }
+        tagEmit(command.sessionId, { type: "background_stopped_all", count: stopped, all: command.all === true });
+        for (const entry of targets) emitBackgroundJobs(command.all === true ? entry.live.session.meta.id : command.sessionId, entry);
+        continue;
+      }
       if (
         command.type === "background_list" ||
         command.type === "background_stop" ||

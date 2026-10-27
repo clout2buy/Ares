@@ -18,7 +18,7 @@ import {
   shellRepositoryInstructionDecision,
   shellWatchdogFor,
 } from "./_shared.js";
-import { runShell } from "./Bash.js";
+import { ownLeftovers, runShell } from "./Bash.js";
 import { powerShellDialect, powerShellErrorLocation, shellFlavorOf } from "./shellHints.js";
 
 const inputSchema = shellInputSchema("PowerShell command line.");
@@ -27,6 +27,9 @@ const inputSchema = shellInputSchema("PowerShell command line.");
 // every item below was a real, repeated failure in field telemetry (PowerShell
 // ran a 15% error rate; most were one of these). Kept compact so it fits the
 // description budget; the result also reports which dialect actually ran.
+/** Agents may run backends; Ares owns what they start (ProcessOwner). */
+const OWNED_PROCESSES = ' You MAY start servers and backends to try things — Rust, Go, Java, .NET, Python, Node, Electron, anything: use run_in_background=true so Ares tracks the process and shows it to the owner; a process that a foreground command leaves running is found and tracked too (the result names it with a shell_id). Stop what you started with KillShell when you are done — anything still running is stopped when this chat closes or Ares exits.';
+
 const POWERSHELL_TRAPS =
   " Windows PowerShell 5.1 traps (the result's `dialect` field says which version ran): " +
   "(1) `&&`/`||` are NOT pipeline operators in 5.1 — chain with `;` or `if ($?) { ... }`. " +
@@ -72,6 +75,7 @@ export const PowerShellTool = buildTool({
   name: "PowerShell",
   description:
     "Run a PowerShell command. Foreground by default; pass run_in_background=true for dev servers/watchers/builds — returns a shell_id, then use BashOutput to poll. Use this on Windows for native PowerShell syntax; use Bash for POSIX scripts. Commands ALREADY run from the workspace root — do NOT prefix `cd <workspace>`; set the `cwd` field only to run in a different directory. ALWAYS quote paths that contain spaces (the workspace path can contain spaces, e.g. \"Ares Workspace\") — an unquoted spaced path makes `cd`/`Set-Location` fail with 'positional parameter' errors; this matters most when launching a detached/new-window process where you must include the path yourself." +
+    OWNED_PROCESSES +
     POWERSHELL_TRAPS,
   safety: "workspace-write",
   concurrency: "exclusive",
@@ -144,9 +148,11 @@ export const PowerShellTool = buildTool({
 
     await fs.mkdir(captureDir, { recursive: true });
     const capturePath = path.join(captureDir, `${runId}.log`);
+    const startedAtMs = Date.now();
     const result = await runShell(pwsh, args, cwd, i.timeout, ctx.signal, (stream, text) => {
       ctx.emitProgress?.({ kind: "shell_output", stream, text });
     }, capturePath);
+    await ownLeftovers(ctx, result, { command: i.command, cwd, startedAtMs });
     // Tell the model WHICH PowerShell it got: pwsh 7+ accepts `&&`, ternaries
     // and `??`; powershell.exe 5.1 rejects all of them. Without this the model
     // has to guess the dialect from an error it may not recognise.

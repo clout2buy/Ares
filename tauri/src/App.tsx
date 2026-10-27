@@ -1945,6 +1945,9 @@ function App() {
         case "background_stopped":
         case "background_resumed":
           return true;
+        case "background_stopped_all":
+          pushLog(`[garrison] stopped ${e.count ?? 0} background process${e.count === 1 ? "" : "es"}${(e as { all?: boolean }).all ? " across every chat" : ""}`);
+          return true;
         case "session_evicted":
           pushLog(`[garrison] session released from memory (idle ${Math.round((e.idleMs ?? 0) / 1000)}s) — it reloads on next use`);
           return true;
@@ -5833,6 +5836,7 @@ function App() {
             todos={active?.todos ?? []}
             backgroundJobs={active ? bgJobs[active.id] ?? [] : []}
             onStopBackground={(id) => daemonCmd({ type: "background_stop", id, sessionId: active?.id })}
+            onStopAllBackground={() => daemonCmd({ type: "background_stop_all", sessionId: active?.id })}
             onResumeBackground={(id) => daemonCmd({ type: "background_resume", id, sessionId: active?.id })}
             steerQueued={active?.steerQueued ?? 0}
             steerActivity={active?.activity}
@@ -6075,6 +6079,7 @@ function App() {
               recovery={active?.pendingRecovery ?? null}
               recoveryMode={recoveryMode}
               onStop={(id) => daemonCmd({ type: "background_stop", id, sessionId: active?.id })}
+              onStopAll={() => daemonCmd({ type: "background_stop_all", sessionId: active?.id })}
               onStopAgent={(jobId) => daemonCmd({ type: "interrupt", sessionId: jobId })}
               onResume={() => active && daemonCmd({ type: "startup_recovery_resume", sessionId: active.id })}
               onDiscard={() => active && daemonCmd({ type: "startup_recovery_discard", sessionId: active.id })}
@@ -9449,6 +9454,7 @@ const Composer = React.memo(function Composer({
   todos,
   backgroundJobs,
   onStopBackground,
+  onStopAllBackground,
   onResumeBackground,
   steerQueued,
   steerActivity,
@@ -9478,6 +9484,7 @@ const Composer = React.memo(function Composer({
   todos: Array<{ id: string; content: string; activeForm: string; status: string }>;
   backgroundJobs: BackgroundJobVm[];
   onStopBackground: (id: string) => void;
+  onStopAllBackground: () => void;
   onResumeBackground: (id: string) => void;
   steerQueued: number;
   steerActivity?: string;
@@ -9843,7 +9850,7 @@ const Composer = React.memo(function Composer({
   return (
     <div className="composer" style={hidden ? { display: "none" } : undefined}>
       {todos.length > 0 ? <TodoPanel todos={todos} /> : null}
-      <BackgroundPanel jobs={backgroundJobs} onStop={onStopBackground} onResume={onResumeBackground} />
+      <BackgroundPanel jobs={backgroundJobs} onStop={onStopBackground} onStopAll={onStopAllBackground} onResume={onResumeBackground} />
       {/* Model / reasoning / routing live in the bottom HUD only — no duplicate
          control strip over the input. Just a contextual steer indicator here. */}
       {busy && steerQueued > 0 ? (
@@ -10654,10 +10661,12 @@ function DiffCard({ item }: { item: Extract<Item, { kind: "diff" }> }) {
 function BackgroundPanel({
   jobs,
   onStop,
+  onStopAll,
   onResume,
 }: {
   jobs: BackgroundJobVm[];
   onStop: (id: string) => void;
+  onStopAll: () => void;
   onResume: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -10681,9 +10690,15 @@ function BackgroundPanel({
       </button>
       {open ? (
         <ul>
+          {running.length > 0 ? (
+            <li className="bgStopAllRow">
+              <span className="bgDesc">Everything this chat left running{running.some((j) => j.adopted) ? " (including processes its commands started)" : ""}</span>
+              <button className="bgAct bgStopAll" onClick={onStopAll} title="Stop every running process this chat owns">Stop all</button>
+            </li>
+          ) : null}
           {shown.map((job) => (
-            <li key={job.id} data-status={job.status} data-suspended={job.suspended ? "1" : "0"}>
-              <span className="bgDesc" title={job.command}>{job.description || job.command}</span>
+            <li key={job.id} data-status={job.status} data-suspended={job.suspended ? "1" : "0"} data-adopted={job.adopted ? "1" : "0"}>
+              <span className="bgDesc" title={job.adopted && job.launchedBy ? `${job.command}\nstarted by: ${job.launchedBy}` : job.command}>{job.description || job.command}</span>
               <span className="bgState">
                 {job.suspended ? (/previous ares/i.test(job.stoppedReason ?? "") ? "from last session" : job.stoppedReason || "paused") : "running"}
               </span>
@@ -12235,13 +12250,14 @@ function ContextPopover({ promptTokens, windowTokens, usage, onRefresh, onClose,
 }
 
 /** What is running behind the chat, so a restart never hides a loop. */
-function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, onStop, onStopAgent, onResume, onDiscard, onHalt, onRefresh }: {
+function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, onStop, onStopAll, onStopAgent, onResume, onDiscard, onHalt, onRefresh }: {
   jobs: BackgroundJobVm[];
   agents: SubagentJobWire[];
   opStatus: { activeCount?: number; halted?: boolean; running?: boolean } | null;
   recovery: { count: number; previews: Array<{ inputId: string; goal: string }> } | null;
   recoveryMode: { mode: "ask" | "auto" | "never"; pinnedByEnv: boolean };
   onStop: (id: string) => void;
+  onStopAll: () => void;
   onStopAgent: (jobId: string) => void;
   onResume: () => void;
   onDiscard: () => void;
@@ -12288,12 +12304,13 @@ function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, 
         </div>
       ))}
       {done.length ? <div className="bgDone">{done.map((a) => <span key={a.jobId}>{a.description || a.kind || a.jobId} <em>{a.status}</em></span>)}</div> : null}
-      <div className="bgSection">Processes</div>
-      {jobs.length === 0 ? <div className="bgEmpty">No background processes for this session.</div> : jobs.map((j) => (
-        <div className="bgCard" key={j.id} data-live={j.status === "running" ? "1" : "0"}>
+      <div className="bgSection">Processes{running.length > 0 ? <button className="btn ghost bgStopAll" onClick={onStopAll} title="Stop every running process this chat owns — launched in the background or left running by a command">Stop all ({running.length})</button> : null}</div>
+      {jobs.length === 0 ? <div className="bgEmpty">No background processes for this session. Anything an agent starts here — a dev server, a backend, an app — shows up in this list and is stopped when the chat closes or Ares exits.</div> : jobs.map((j) => (
+        <div className="bgCard" key={j.id} data-live={j.status === "running" ? "1" : "0"} data-adopted={j.adopted ? "1" : "0"}>
           <div className="bgCardBody">
             <strong>{j.description || j.command}</strong>
-            <span>{j.status}{j.suspended ? " · suspended" : ""}{j.cwd ? ` · ${compact(j.cwd, 48)}` : ""}</span>
+            <span>{j.status}{j.suspended ? " · suspended" : ""}{j.pid ? ` · pid ${j.pid}` : ""}{j.cwd ? ` · ${compact(j.cwd, 48)}` : ""}</span>
+            {j.adopted && j.launchedBy ? <span className="bgLaunchedBy" title={j.launchedBy}>started by a command: {compact(j.launchedBy, 90)}</span> : null}
           </div>
           {j.status === "running" ? <div className="bgCardActions"><button className="btn ghost" onClick={() => onStop(j.id)}>Stop</button></div> : null}
         </div>

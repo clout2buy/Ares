@@ -5031,3 +5031,12 @@ html[data-perf="lite"] .brandBtn, html[data-perf="lite"] .hudVersion { animation
 @keyframes stageBgBreathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(40, 200, 64, 0.45); } 50% { box-shadow: 0 0 0 5px rgba(40, 200, 64, 0); } }
 /* agent sheet: the Save row stays in view however long the form is */
 .agentSheetFoot { position: sticky; bottom: -22px; margin: 4px -22px -22px; padding: 12px 22px 18px; background: var(--bg-raised, #16130f); z-index: 3; border-top: 1px solid var(--line); }
+
+/* background processes: Stop all, and the ones a command left running */
+.bgStopAllRow { justify-content: space-between; border-bottom: 1px dashed var(--line); margin-bottom: 2px; }
+.bgStopAll { color: #ffb4b4 !important; border-color: rgba(239, 68, 68, 0.4) !important; }
+.bgStopAll:hover { background: rgba(239, 68, 68, 0.14) !important; }
+.bgSection .bgStopAll { float: right; margin-top: -4px; padding: 2px 8px; font-size: 11px; letter-spacing: 0; text-transform: none; }
+.bgPanel li[data-adopted="1"] .bgDesc::before { content: "⤷ "; color: var(--faint); }
+.bgCard[data-adopted="1"] { border-left: 2px solid rgba(245, 165, 36, 0.6); }
+.bgLaunchedBy { display: block; font-size: 11px; color: var(--faint); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

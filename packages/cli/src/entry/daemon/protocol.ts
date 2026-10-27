@@ -117,6 +117,8 @@ export interface DaemonInputCommand {
   guestId?: string;
   /** room_invite_revoke — the invite code to retract. */
   code?: string;
+  /** background_stop_all — every resident session, not just this one. */
+  all?: boolean;
   muted?: boolean;
   notes?: string;
   /** directory_profile — displayName / bio / shownAgents (persona ids). */

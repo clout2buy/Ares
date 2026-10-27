@@ -40,6 +40,24 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.67.1",
+    date: "October 2026",
+    title: "Nothing left running",
+    tagline: "Every process an agent starts is yours to see and stop — and the errors that used to greet every message are gone.",
+    highlights: [
+      { icon: "🧹", title: "Nothing left running", blurb: "Agents can start servers, backends and apps to try things — and anything they start now shows in the Background list with the command that launched it, even when a command just left it running. Stop it with one click; it ends when the chat closes or Ares exits.", tag: "New" },
+      { icon: "⏹️", title: "Stop all", blurb: "One button stops every process a chat left running, in the message box tray and in Forge → Background.", tag: "New" },
+      { icon: "🔑", title: "No more error on every message", blurb: "A provider with a bad or unpaid key is skipped quietly after the first failure instead of failing every message; a fresh key brings it back by itself. Missing or rejected keys are checked before a reply is even tried.", tag: "Fixed" },
+      { icon: "📋", title: "Copy a message", blurb: "Hover any message for a copy button.", tag: "New" },
+      { icon: "⬇️", title: "Jump to the latest", blurb: "A round arrow at the bottom right takes you to the end of a long chat instantly; the scrollbar is always big enough to grab.", tag: "Polished" },
+      { icon: "📊", title: "Usage at the top", blurb: "Each chat's header shows how much of the provider's plan is used, and a green dot when something runs in the background.", tag: "New" },
+      { icon: "✏️", title: "Drafts stay put", blurb: "Text typed into one agent's chat no longer follows you into another.", tag: "Fixed" },
+      { icon: "🖼️", title: "Transparent sprites", blurb: "Uploaded avatar pictures keep their transparency instead of a black square; the maximize button works again.", tag: "Fixed" },
+      { icon: "👥", title: "Rooms you can read", blurb: "Rooms match the light glass look, the Members panel separates people, agents and pending invites, and an invite can be retracted.", tag: "Polished" },
+      { icon: "✕", title: "Cancelled steps marked", blurb: "A plan step that was dropped on purpose shows an × instead of an empty ring, and the save button in agent settings stays in view.", tag: "Polished" },
+    ],
+  },
+  {
     version: "0.66.4",
     date: "October 2026",
     title: "Ares for people",

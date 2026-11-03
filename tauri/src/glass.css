@@ -1394,3 +1394,30 @@
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentSheetFoot { bottom: -18px; margin: 4px -24px -18px; padding: 12px 24px 16px; background: var(--g-solid); border-top: 1px solid var(--line); border-radius: 0 0 30px 30px; }
 /* the plan's cancelled mark */
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .todoPanel li[data-status="cancelled"] { text-decoration-color: rgba(20, 24, 34, 0.3); }
+
+/* Permission card ("Can I ...?") in the light glass skin. It used to keep the
+   dark Modern panel, a black slab in the middle of a silver chat. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gate {
+  background: var(--g-fill-strong);
+  -webkit-backdrop-filter: var(--g-blur);
+  backdrop-filter: var(--g-blur);
+  border: var(--g-rim);
+  box-shadow: var(--g-shadow);
+  color: var(--text);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gate[data-decided="0"] {
+  border-color: rgba(var(--g-acc-rgb), 0.45);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gate strong { color: var(--text-hi); font-family: var(--font); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateReason { color: var(--muted); font-family: var(--font); }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateTarget {
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateIcon {
+  background: rgba(var(--g-acc-rgb), 0.12);
+  color: var(--ember-text);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateAllow { background: var(--g-orange); color: #fff; }
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateDecided { color: var(--faint); }

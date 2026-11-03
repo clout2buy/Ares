@@ -1008,18 +1008,25 @@ function App() {
     // the "out" run (reverse resolve) takes ~480ms; unmount right after
     window.setTimeout(() => { setForge((f) => ({ ...f, open: false })); setForgeClosing(false); }, 500);
   }, [forgeClosing]);
-  const [forgeWidth, setForgeWidth] = useState(() => Math.min(560, Math.round(window.innerWidth * 0.36)));
+  // A window that has no size yet when the app mounts (hidden behind the splash,
+  // or a preview pane still laying out) reported innerWidth 0, the Forge was born
+  // 0px wide, and the resize clamp below only ever shrank it: every page Ares
+  // "opened in the Forge" landed in a 26px sliver (live test 2026-11-03).
+  const initialForgeWidth = (winW: number) => (winW > 0 ? Math.min(560, Math.max(340, Math.round(winW * 0.36))) : 480);
+  const [forgeWidth, setForgeWidth] = useState(() => initialForgeWidth(window.innerWidth));
   // True only during an active grip drag — flips off the 280ms grid transition
   // so the panel tracks the pointer 1:1 instead of rubber-banding behind it.
   const [forgeDragging, setForgeDragging] = useState(false);
   // The forge must never crush the chat below a usable width. This is the max
   // forge width the CURRENT window allows (rail 264 + a min chat of 360).
-  const maxForgeFor = (winW: number) => Math.max(300, winW - 264 - 360);
+  // Glass skin: the chat list is 300px plus ~40px of column gaps/padding (the
+  // 264 here was the old rail, and a max-width Forge crushed the chat to ~100px).
+  const maxForgeFor = (winW: number) => Math.max(300, winW - 340 - 360);
   // Re-clamp the forge as the window shrinks — without this the forge kept its
   // px width while the window narrowed, overflowing the grid and clipping the
   // right half of the UI (the "UI gets cut off when smaller" bug).
   useEffect(() => {
-    const onResize = () => setForgeWidth((w) => Math.min(w, maxForgeFor(window.innerWidth)));
+    const onResize = () => setForgeWidth((w) => Math.min(w >= 300 ? w : initialForgeWidth(window.innerWidth), maxForgeFor(window.innerWidth)));
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);

@@ -840,6 +840,16 @@ export function ownerBrowserRefusal(command: string): string | null {
   if (runsBrowser.test(line) || (browserExe.test(line) && /--remote-debugging|--headless|--app=|--new-window|--user-data-dir/i.test(line))) {
     return "Refused: that launches a browser outside the Forge. Ares shows and drives pages ONLY in its Forge (its own embedded browser): call Browser {action:\"open\"} with the URL. Never start Chrome/Edge yourself, with or without a DevTools port.";
   }
+  // A browser started through an automation library from the shell (live
+  // test 2026-11-03: the Forge reported 0px in a dev preview, and the model
+  // reached for "a full-size headless screenshot" via Playwright). Same rule:
+  // no hidden browser, ever. `npx playwright install` (fetching browsers for a
+  // project's own test suite) and `playwright test` stay allowed.
+  const automationLaunch =
+    /\b(?:chromium|firefox|webkit)\s*\.\s*launch(?:PersistentContext)?\s*\(|\bpuppeteer(?:-core)?['"]?\s*\)?\s*\.\s*launch\s*\(|\bplaywright(?:\.cmd)?\s+(?:screenshot|pdf|open|codegen|cr|ff|wk)\b|\bsync_playwright\s*\(|\basync_playwright\s*\(|\bpyppeteer\b|\bselenium\b[^;&|]*\bwebdriver\b/i;
+  if (automationLaunch.test(line)) {
+    return "Refused: that starts a hidden browser through Playwright/Puppeteer/Selenium. Ares shows and checks pages ONLY in its Forge: call Browser {action:\"open\"} (or \"preview\") with the path or URL. If the Forge cannot show it, tell the owner in one line and stop.";
+  }
   return null;
 }
 

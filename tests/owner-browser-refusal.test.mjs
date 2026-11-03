@@ -54,3 +54,17 @@ test("ordinary shell work is not refused", () => {
     "kill-opener.sh",
   ]) assert.equal(ownerBrowserRefusal(c), null, `should allow: ${c}`);
 });
+
+test("a hidden browser through Playwright/Puppeteer/Selenium from the shell is refused; project test runs are not", async () => {
+  const { ownerBrowserRefusal } = await import("../packages/tools/dist/_shared.js");
+  for (const cmd of [
+    `node -e "const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();})()"`,
+    `node shot.mjs && node -e "require('puppeteer').launch()"`,
+    `npx playwright screenshot http://127.0.0.1:5173 out.png`,
+    `python -c "from playwright.sync_api import sync_playwright; sync_playwright().start()"`,
+    `node -e "firefox.launchPersistentContext('x')"`,
+  ]) assert.ok(ownerBrowserRefusal(cmd), `refused: ${cmd}`);
+  for (const cmd of [`npx playwright install chromium`, `npx playwright test`, `pnpm test`, `grep -rn playwright package.json`]) {
+    assert.equal(ownerBrowserRefusal(cmd), null, `allowed: ${cmd}`);
+  }
+});

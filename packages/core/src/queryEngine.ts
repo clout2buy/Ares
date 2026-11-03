@@ -1279,6 +1279,18 @@ export function stripImagesForBlindModel(messages: readonly Message[]): Message[
 }
 
 /** Does the outbound history carry any image block at all? */
+/** Images in a history, top-level and inside tool_results. Exported for tests. */
+export function countImages(messages: readonly Message[]): number {
+  let n = 0;
+  for (const m of messages) {
+    for (const b of m.content) {
+      if (b.type === "image") n++;
+      else if (b.type === "tool_result" && Array.isArray(b.content)) n += b.content.filter((c) => c.type === "image").length;
+    }
+  }
+  return n;
+}
+
 export function historyHasImages(messages: readonly Message[]): boolean {
   return messages.some((m) =>
     m.content.some(
@@ -2246,6 +2258,55 @@ export class QueryEngine {
    *  break. The current round and the N most recent rounds are never touched
    *  (with keep ≥ 1 the newest batch is always inside the kept window).
    *  Returns cleared counts, or null when nothing changed. */
+  /** Permanently replace the OLDEST images in history with a placeholder, down
+   *  to a low-water mark below what the per-request fit just kept (half of it,
+   *  and half the payload cap), so the next drop is many screenshots away. One
+   *  cache miss per batch instead of one per request. Returns true when it
+   *  changed history. */
+  private persistImageDrops(keptByFit: number): boolean {
+    const keepCount = keptByFit <= 1 ? keptByFit : Math.max(1, Math.floor(keptByFit / 2));
+    const payloadTarget = MAX_IMAGE_PAYLOAD_BYTES / 2;
+    const slots: Array<{ get: () => ContentBlock; drop: () => void }> = [];
+    for (const m of this.messages) {
+      for (let i = 0; i < m.content.length; i++) {
+        const b = m.content[i];
+        if (b.type === "image") {
+          const idx = i;
+          slots.push({ get: () => m.content[idx], drop: () => { m.content[idx] = { type: "text", text: STALE_IMAGE_PLACEHOLDER }; } });
+        } else if (b.type === "tool_result" && Array.isArray(b.content)) {
+          const tr = b;
+          const blocks = b.content;
+          for (let j = 0; j < blocks.length; j++) {
+            if (blocks[j].type !== "image") continue;
+            const jdx = j;
+            slots.push({
+              get: () => (tr.content as ContentBlock[])[jdx],
+              drop: () => {
+                const inner = [...(tr.content as ContentBlock[])];
+                inner[jdx] = { type: "text", text: STALE_IMAGE_PLACEHOLDER };
+                tr.content = inner as typeof tr.content;
+                blockTokenMemo.delete(tr);
+              },
+            });
+          }
+        }
+      }
+    }
+    const bytesOf = (b: ContentBlock): number => (b.type === "image" && b.source.kind === "base64" ? base64DecodedBytes(b.source.data) : 0);
+    let remaining = slots.length;
+    let payload = slots.reduce((sum, slot) => sum + bytesOf(slot.get()), 0);
+    let changed = false;
+    for (const slot of slots) {
+      if (remaining <= keepCount && payload <= payloadTarget) break;
+      if (remaining <= 1 && keepCount >= 1 && payload <= MAX_IMAGE_PAYLOAD_BYTES) break;
+      payload -= bytesOf(slot.get());
+      slot.drop();
+      remaining--;
+      changed = true;
+    }
+    return changed;
+  }
+
   private clearStaleScreenshots(): { images: number; results: number; savedBytes: number } | null {
     const keepRounds = imageKeepRounds();
     if (keepRounds <= 0) return null;
@@ -3090,6 +3151,15 @@ export class QueryEngine {
             // a prompt past the context limit (it keeps 2 recent frames, then 1,
             // then 0 as needed). budgetMessages already trimmed old whole messages.
             let outboundMessages = fitImagesToBudget(budgeted.messages, budgetAttempts[attempt], overheadTokens);
+            // Make an image drop STICK, in one batch. fitImagesToBudget decides per
+            // request on a copy, keeping the newest K; every new screenshot pushed one
+            // more old image past K (and a budget wobble pulled one back), each time
+            // rewriting history behind the rolling cache point. Live test 2026-11-03:
+            // 6 of 14 requests in one turn re-billed ~90k tokens each (506k fresh).
+            const keptImages = countImages(outboundMessages);
+            if (keptImages < countImages(budgeted.messages) && this.persistImageDrops(keptImages)) {
+              outboundMessages = fitImagesToBudget(budgeted.messages, budgetAttempts[attempt], overheadTokens);
+            }
             // ── Blind-model guard (LAST thing before the wire). ──
             // A text-only model must never receive an image block: providers
             // hard-fail the request, and since the image lives in history the

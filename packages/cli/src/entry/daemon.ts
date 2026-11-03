@@ -71,6 +71,7 @@ import { runSelfTest, type SelfTestResult } from "../selfTest.js";
 import { aresAgentHome, deletePersona, listPersonas, loadAgentConfig, onLifecycle, pinOwnerMemory, runDeepDream, runSkill, skillHubProbe, skillHubList, skillHubGet, skillHubPublish, installHubSkill, readLocalSkillFiles, writePersona } from "@ares/agent";
 import { adoptPersonaByName, applyPersonaToolResult, newPersonaGate, personaForMessage, personaToWire, type PersonaGate } from "./daemon/personas.js";
 import { assembleCognitiveState } from "./daemon/cognitiveState.js";
+import { dailyTriageEnabled, dailyTriageTask } from "./daemon/triageDaily.js";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, loadWatchers, operatorTickIntervalMs, type StandingOrder } from "@ares/operator";
 import { MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, buildConversationDigest, mergeDurableFacts, withConsolidationLock, CONVERSATION_REFLECT_SYSTEM, DURABLE_FACTS_SCHEMA_HINT, type DurableFact } from "@ares/mind";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, runAresAccountSignin, probeAresOauth } from "@ares/core";
@@ -964,6 +965,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     }),
   );
   await pluginHost.mount(maintenanceTimerPlugin({ name: "idle-sweep", everyMs: 60_000, task: idleSweepTask }));
+  // Daily reliability triage (entry/daemon/triageDaily.ts): the queue "What keeps breaking" reads.
+  if (dailyTriageEnabled()) {
+    await pluginHost.mount(maintenanceTimerPlugin({ name: "triage-daily", everyMs: 60 * 60_000, initialDelayMs: 10 * 60_000, task: dailyTriageTask({ home: live.context.aresHome, workspace: () => live.context.workspace, busy: () => [primaryEntry, ...sessions.values()].some((entry) => entry.turnActive) }) }));
+  }
 
   // ─── Daily self-test ──────────────────────────────────────────────────────
   // Once a day, while nothing is running, a throwaway offline daemon is put

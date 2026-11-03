@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import type { TurnEvent } from "@ares/protocol";
 import { AlertEngine, type Signals } from "./systemAlerts.js";
 import { backupDue, backupRoot, readBackupStatus, runBackup, type BackupResult } from "./systemBackup.js";
-import { countStrayProcesses, Housekeeping, housekeepingEnabled, type HousekeepingReport } from "./systemHousekeeping.js";
+import { countStrayProcesses, Housekeeping, housekeepingEnabled, type HousekeepingDeps, type HousekeepingReport } from "./systemHousekeeping.js";
 import { healthFromFile, readHealthFile } from "./connectorHealth.js";
 import { createSystemApi } from "./phoneSystem.js";
 import { ErrorRing, LoopMonitor, ProviderHealth, scrubErrorText } from "./systemSignals.js";
@@ -150,6 +150,8 @@ export interface SystemSurfacesOptions {
   instances?: () => Promise<{ supported: boolean; items: Array<{ name: string; state: string; healthy: boolean }> }>;
   /** Core's checkpoint GC. */
   gcCheckpoints?: (workspace: string) => Promise<void>;
+  /** Core's checkpoint byte cap (run by housekeeping under disk pressure). */
+  capCheckpoints?: HousekeepingDeps["capCheckpoints"];
   /** The live session kernel for `workspace`: WAL folds and consistent backups. */
   kernel?: { maintainWal(mode: "PASSIVE" | "TRUNCATE"): { busy: number; log: number; checkpointed: number } | null; backupTo(dest: string): void };
   activeTurns: () => number;
@@ -182,6 +184,7 @@ export function startSystemSurfaces(o: SystemSurfacesOptions): SystemSurfaces {
     workspaces: workspaceList,
     activeTurns: o.activeTurns,
     ...(o.gcCheckpoints ? { gcCheckpoints: o.gcCheckpoints } : {}),
+    ...(o.capCheckpoints ? { capCheckpoints: o.capCheckpoints } : {}),
     ...(o.kernel ? { maintainWal: (mode: "PASSIVE" | "TRUNCATE") => o.kernel!.maintainWal(mode) } : {}),
     log: o.log,
   });

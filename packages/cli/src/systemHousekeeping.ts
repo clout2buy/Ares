@@ -213,6 +213,8 @@ export interface HousekeepingDeps {
   activeTurns?: () => number;
   /** Core's checkpoint GC (blobs + metas). Absent = the job reports "not wired". */
   gcCheckpoints?: (workspace: string) => Promise<void>;
+  /** Core's checkpoint byte cap (capWorkspaceCheckpoints), run under disk pressure, oldest first. */
+  capCheckpoints?: (workspace: string) => Promise<{ capBytes: number; beforeBytes: number; freedBytes: number; removedCheckpoints: number; skipped?: string }>;
   /** WAL fold; the host passes its kernel. Returns pages still unfolded, or null. */
   maintainWal?: (mode: "PASSIVE" | "TRUNCATE") => { busy: number; log: number; checkpointed: number } | null;
   git?: (cwd: string, args: string[]) => Promise<GitResult>;
@@ -678,7 +680,7 @@ export class Housekeeping {
     for (const dir of dirs) await walk(dir, 0);
   }
 
-  private async jobCheckpoints(c: { dryRun: boolean; counters: JobCounters }): Promise<void> {
+  private async jobCheckpoints(c: { dryRun: boolean; factor: number; counters: JobCounters }): Promise<void> {
     // <workspace>/.ares/checkpoints. When Ares's home IS <something>/.ares, that something is a workspace too:
     // that is where the 1.2GB of orphaned blobs on Rook sat, with no metas left to reference them.
     const spaces = new Set<string>((this.d.workspaces ?? []).map((w) => path.resolve(w)));
@@ -710,6 +712,21 @@ export class Housekeeping {
       c.counters.acted += freedBlobs;
       c.counters.bytes += freed;
       if (freedBlobs > 0) await this.ledger({ job: "checkpoints", action: "gc", target: blobs, bytes: freed, detail: `${freedBlobs} orphaned blobs` });
+    }
+    // Under disk pressure the store is also held under its byte cap, oldest
+    // checkpoints first (each session keeps its newest). Without this a box at
+    // 84% reported 2,851 checkpoints found and 0 acted on: every blob was still
+    // referenced, so the orphan sweep alone could never free anything.
+    if (c.factor < 1 && this.d.capCheckpoints && !c.dryRun) {
+      for (const ws of spaces) {
+        if (!(await exists(path.join(ws, ".ares", "checkpoints")))) continue;
+        const r = await this.d.capCheckpoints(ws);
+        if (r.removedCheckpoints === 0) continue;
+        c.counters.acted += r.removedCheckpoints;
+        c.counters.bytes += r.freedBytes;
+        c.counters.notes.push(`${path.basename(ws)}: byte cap ${(r.capBytes / 1_048_576).toFixed(0)} MB, removed ${r.removedCheckpoints} oldest checkpoints, freed ${(r.freedBytes / 1_048_576).toFixed(1)} MB`);
+        await this.ledger({ job: "checkpoints", action: "gc", target: path.join(ws, ".ares", "checkpoints"), bytes: r.freedBytes, detail: `byte cap: ${r.removedCheckpoints} oldest checkpoints removed` });
+      }
     }
   }
 

@@ -420,6 +420,110 @@ async function gcUnserialized(workspace: string, anchorsAhead: Promise<void> = P
   }
 }
 
+/** Byte cap for one workspace's checkpoint store (blobs + metas), in bytes.
+ *  ARES_CHECKPOINT_MAX_MB, default 200; 0 disables the cap. */
+export function checkpointCapBytes(): number {
+  const env = Number(process.env.ARES_CHECKPOINT_MAX_MB);
+  const mb = Number.isFinite(env) && env >= 0 ? env : 200;
+  return Math.floor(mb * 1024 * 1024);
+}
+
+export interface CheckpointCapResult {
+  capBytes: number;
+  beforeBytes: number;
+  afterBytes: number;
+  freedBytes: number;
+  removedCheckpoints: number;
+  /** Why nothing was removed. */
+  skipped?: "disabled" | "under-cap" | "unreadable" | "nothing-removable";
+}
+
+async function checkpointStoreBytes(workspace: string): Promise<{ total: number; blobs: Map<string, number> }> {
+  const blobs = new Map<string, number>();
+  let total = 0;
+  const root = path.join(workspace, ".ares", "checkpoints", "blobs");
+  for (const shard of await fs.readdir(root).catch(() => [] as string[])) {
+    for (const hash of await fs.readdir(path.join(root, shard)).catch(() => [] as string[])) {
+      const st = await fs.stat(path.join(root, shard, hash)).catch(() => null);
+      if (!st?.isFile()) continue;
+      blobs.set(hash, st.size);
+      total += st.size;
+    }
+  }
+  const dir = metaDir(workspace);
+  for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+    const st = await fs.stat(path.join(dir, name)).catch(() => null);
+    if (st?.isFile()) total += st.size;
+  }
+  return { total, blobs };
+}
+
+/**
+ * Hold the store under a byte cap, oldest checkpoints first. Field origin: a
+ * box at 84% disk with 2,851 checkpoints and housekeeping reporting "0 acted
+ * on" — every blob was still referenced by a meta inside the count and age
+ * limits, so the orphan sweep had nothing to sweep, and nothing else had a
+ * notion of "too big".
+ *
+ * The newest checkpoint of EVERY session is never removed, so whichever
+ * session is current keeps its latest undo point (a superset of "the current
+ * session's latest"). Evicted metas go first; their blobs are then reclaimed
+ * by the ordinary sweep (gcUnserialized), which also drops their git anchor
+ * refs. A store with an unreadable meta is left alone, exactly as the GC does.
+ */
+export function capWorkspaceCheckpoints(workspace: string, opts: { maxBytes?: number } = {}): Promise<CheckpointCapResult> {
+  const anchorsAhead = anchorPending.get(path.resolve(workspace)) ?? Promise.resolve();
+  return serializedForWorkspace(workspace, async () => {
+    const capBytes = opts.maxBytes ?? checkpointCapBytes();
+    const before = await checkpointStoreBytes(workspace);
+    const base = { capBytes, beforeBytes: before.total, afterBytes: before.total, freedBytes: 0, removedCheckpoints: 0 };
+    if (capBytes <= 0) return { ...base, skipped: "disabled" };
+    if (before.total <= capBytes) return { ...base, skipped: "under-cap" };
+
+    const dir = metaDir(workspace);
+    const rows: Array<{ name: string; sessionId: string; createdAt: string; hashes: Set<string>; size: number }> = [];
+    for (const name of (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(".json"))) {
+      try {
+        const file = path.join(dir, name);
+        const raw = await fs.readFile(file, "utf8");
+        const meta = JSON.parse(raw) as CheckpointMeta;
+        rows.push({ name, sessionId: meta.sessionId, createdAt: meta.createdAt, hashes: new Set((meta.fileManifest ?? []).map((r) => r.blobHash)), size: Buffer.byteLength(raw) });
+      } catch {
+        return { ...base, skipped: "unreadable" };
+      }
+    }
+    const newest = new Map<string, { name: string; createdAt: string }>();
+    for (const row of rows) {
+      const cur = newest.get(row.sessionId);
+      if (!cur || row.createdAt > cur.createdAt) newest.set(row.sessionId, { name: row.name, createdAt: row.createdAt });
+    }
+    const protectedNames = new Set([...newest.values()].map((n) => n.name));
+    const refs = new Map<string, number>();
+    for (const row of rows) for (const h of row.hashes) refs.set(h, (refs.get(h) ?? 0) + 1);
+
+    let projected = before.total;
+    const doomed: string[] = [];
+    for (const row of [...rows].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+      if (projected <= capBytes) break;
+      if (protectedNames.has(row.name)) continue;
+      doomed.push(row.name);
+      projected -= row.size;
+      for (const h of row.hashes) {
+        const left = (refs.get(h) ?? 1) - 1;
+        refs.set(h, left);
+        if (left === 0) projected -= before.blobs.get(h) ?? 0;
+      }
+    }
+    if (doomed.length === 0) return { ...base, skipped: "nothing-removable" };
+    for (const name of doomed) await fs.rm(path.join(dir, name), { force: true }).catch(() => {});
+    // The ordinary sweep reclaims every blob no surviving meta references.
+    // Blobs younger than a minute are spared by it, so a live turn is safe.
+    await gcUnserialized(workspace, anchorsAhead);
+    const after = await checkpointStoreBytes(workspace);
+    return { ...base, afterBytes: after.total, freedBytes: Math.max(0, before.total - after.total), removedCheckpoints: doomed.length };
+  });
+}
+
 export async function listWorkspaceCheckpoints(workspace: string): Promise<CheckpointMeta[]> {
   const entries = await fs.readdir(metaDir(workspace)).catch(() => []);
   const metas = await Promise.all(

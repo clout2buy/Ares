@@ -8,7 +8,7 @@
 // an error, and a source that throws or stalls costs the owner that one section
 // and nothing else.
 
-import { appendAudit, readAudit } from "@ares/core";
+import { appendAudit, digestReliabilityFindings, listReliabilityFindings, readAudit } from "@ares/core";
 import type { SessionManager } from "@ares/garrison";
 import { rolloutPath } from "@ares/garrison";
 import { loadSchedule, listAlarms } from "@ares/channels";
@@ -23,6 +23,7 @@ import {
   type BriefingSources,
   type CalendarWindow,
   type FactAgent,
+  type FactBreaking,
   type FactEvent,
   type FactMail,
   type FactReminder,
@@ -93,6 +94,14 @@ export interface BriefingSourceDeps {
   now?: () => number;
   /** The nightly Maintainer's facts for the "Ares maintenance" section (absent: no such section). */
   maintenance?: (sinceMs: number) => Promise<MaintenanceFacts>;
+  /** "What keeps breaking" (absent: no such section). Production: triageBreakingSource(aresHome). */
+  breaking?: () => Promise<FactBreaking[]>;
+}
+
+/** The top three items of the ranked triage digest, read from `home`'s triage queue. */
+export function triageBreakingSource(home: string, limit = 3): () => Promise<FactBreaking[]> {
+  return async () =>
+    digestReliabilityFindings(await listReliabilityFindings(home), { limit }).map((item) => ({ what: item.what, fix: item.fix, count: item.count }));
 }
 
 const inWindow = (startIso: string, window: CalendarWindow): boolean => {
@@ -108,6 +117,7 @@ export function buildBriefingSources(deps: BriefingSourceDeps): BriefingSources 
 
   return {
     ...(deps.maintenance ? { maintenance: deps.maintenance } : {}),
+    ...(deps.breaking ? { breaking: deps.breaking } : {}),
     weather: async () => {
       const where = location();
       if (!where) throw new SourceNotConnected("no home location is set (ARES_OWNER_LOCATION)");

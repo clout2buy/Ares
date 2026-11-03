@@ -128,6 +128,25 @@ repair gate intentionally stays closed until an authenticated, isolated Git
 worktree runner exists. Set `ARES_SELF_TRIAGE=0` to disable automatic scans or
 `ARES_SELF_TRIAGE_INTERVAL_MS` to change the six-hour cadence.
 
+The queue is also read for you. Near-duplicate findings collapse into one item
+with a count, ranked by cost (occurrences x recency x severity x whether you hit
+it in several chats or interrupted a turn); the top three appear as "What keeps
+breaking" in the morning briefing, and the Maintainer takes the top items
+(`ARES_MAINTAINER_TRIAGE_TOP`, default 10) as input. `ARES_TRIAGE_DIGEST_DAYS`
+(30) and `ARES_TRIAGE_DIGEST_HALF_LIFE_DAYS` (7) tune the ranking. The desktop
+daemon runs a scan once a day while idle (`ARES_TRIAGE_DAILY=0` off,
+`ARES_TRIAGE_DAILY_HOURS`, default 20). Sources you have not connected show as
+one "Connect calendar, weather, mail" line at most every
+`ARES_BRIEFING_CONNECT_HINT_DAYS` (7) days.
+
+Housekeeping under disk pressure holds each workspace's checkpoint store under
+`ARES_CHECKPOINT_MAX_MB` (default 200; 0 off), oldest first, keeping every
+session's newest checkpoint. A dead pre-"one vault" home (`%APPDATA%\Ares\home`,
+plus `ARES_LEGACY_HOME_DIRS`) with no file newer than
+`ARES_LEGACY_HOME_STALE_DAYS` (30) becomes one approval card; it is removed (to
+the Recycle Bin when possible) only when you approve it.
+`ARES_LEGACY_HOME_CHECK=0` turns the check off.
+
 ## Browser & CDP attach
 
 Ares can drive a real browser. By default it launches a persistent-profile

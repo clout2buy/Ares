@@ -642,7 +642,7 @@ test("telemetry: crashes, audit errors, triage findings, bug reports and red ver
   assert.equal(by("crash")[0].occurrences, 2);
   assert.ok(!JSON.stringify(issues).includes(secret), "no secret survives into an issue");
   assert.deepEqual(by("audit").map((i) => i.title.split(" ")[0]), ["Browser.click"], "denials, the maintainer's own errors and one-offs are not issues");
-  assert.deepEqual(by("failed-turn").map((i) => i.title), ["Turn failed: provider 400"]);
+  assert.deepEqual(by("failed-turn").map((i) => i.title), ["The model provider rejected requests as malformed (HTTP 400)"], "triage items arrive collapsed and in plain English");
   assert.equal(by("bug-report").length, 2);
   assert.ok(by("bug-report").every((i) => i.title.startsWith("Owner-reported:")));
   assert.equal(by("verify-failure").length, 1, "a red verify of a non-auto branch counts; the Maintainer's own failed attempts do not");

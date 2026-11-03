@@ -13,7 +13,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { gunzip } from "node:zlib";
 import { promisify } from "node:util";
-import { listReliabilityFindings, readAudit, type ReliabilityFinding } from "@ares/core";
+import { digestReliabilityFindings, listReliabilityFindings, readAudit, type ReliabilityFinding } from "@ares/core";
 import { redactSecrets } from "@ares/protocol";
 import { fingerprintOf, type Issue } from "./maintainer.js";
 
@@ -84,19 +84,31 @@ async function auditIssues(opts: TelemetryOptions, sinceMs: number): Promise<Iss
 
 const SEVERITY: Record<string, 1 | 2 | 3 | 4> = { critical: 4, high: 3, medium: 2, low: 1 };
 
+/**
+ * The triage queue's TOP items, collapsed and ranked by what they cost the owner
+ * (@ares/core reliabilityDigest) — the same list the morning briefing shows as
+ * "What keeps breaking". One issue per problem, not one per failure signature:
+ * the queue held 103 separate "Edit repeated tool failures" findings, and the
+ * Maintainer must not spend a night's budget on each of them.
+ */
 async function triageIssues(opts: TelemetryOptions, sinceMs: number): Promise<Issue[]> {
   const findings = await (opts.findings ?? (() => listReliabilityFindings(opts.home)))().catch(() => [] as ReliabilityFinding[]);
-  return findings
-    .filter((f) => (f.status === "candidate" || f.status === "acknowledged") && f.category === "product" && Date.parse(f.lastSeenAt) >= sinceMs)
-    .map((f): Issue => ({
-      fingerprint: fingerprintOf("triage", f.fingerprint),
-      source: f.kind === "failed_turn" || f.kind === "failed_subagent" ? "failed-turn" : f.kind === "crash" ? "crash" : "triage",
-      severity: SEVERITY[f.severity] ?? 2,
-      occurrences: f.occurrences,
-      lastSeenAt: f.lastSeenAt,
-      title: clean(f.title, 140),
-      evidence: [...f.evidence.slice(0, 4).map((e) => clean(e.summary, 200)), clean(f.suggestedAction, 160)].filter(Boolean),
-    }));
+  const now = opts.now?.() ?? Date.now();
+  const fresh = findings.filter((f) => (f.status === "candidate" || f.status === "acknowledged") && f.category === "product" && Date.parse(f.lastSeenAt) >= sinceMs);
+  const byId = new Map(fresh.map((f) => [f.id, f]));
+  const limit = Number(process.env.ARES_MAINTAINER_TRIAGE_TOP) > 0 ? Math.floor(Number(process.env.ARES_MAINTAINER_TRIAGE_TOP)) : 10;
+  return digestReliabilityFindings(fresh, { now, limit }).map((item): Issue => {
+    const kinds = item.findingIds.map((id) => byId.get(id)?.kind);
+    return {
+      fingerprint: fingerprintOf("triage", item.key),
+      source: kinds.every((k) => k === "failed_turn" || k === "failed_subagent") ? "failed-turn" : kinds.every((k) => k === "crash") ? "crash" : "triage",
+      severity: SEVERITY[item.severity] ?? 2,
+      occurrences: item.count,
+      lastSeenAt: item.lastSeenAt,
+      title: clean(item.what, 140),
+      evidence: [...item.evidence.map((e) => clean(e, 200)), clean(`suggested fix: ${item.fix}`, 200), `${item.findings} triage finding(s), ${item.count} occurrence(s)`].filter(Boolean),
+    };
+  });
 }
 
 async function bugReportIssues(opts: TelemetryOptions, sinceMs: number): Promise<Issue[]> {

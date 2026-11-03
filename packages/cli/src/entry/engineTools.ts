@@ -978,6 +978,7 @@ function makeOperatorChatTool(opts: {
           id: i.id ?? newGoalId(),
           statement,
           verification: i.verification ? toVerificationSpec(i.verification) : undefined,
+          origin: { kind: "owner", via: "chat" },
         });
         await saveGoal(home, goal);
         return {
@@ -1046,6 +1047,7 @@ function makeOperatorChatTool(opts: {
             id: newGoalId(),
             statement: i.goal.trim(),
             verification: i.verification ? toVerificationSpec(i.verification) : undefined,
+            origin: { kind: "owner", via: "chat" },
           });
           await saveGoal(home, goal);
           targetId = goal.id;

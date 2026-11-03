@@ -95,7 +95,7 @@ function telegramCommandDeps(context: CliRuntimeContext, modelControl?: Telegram
       const statement = p.planningOnly
         ? `Plan ONLY — do NOT execute. Investigate and propose changes for the owner's approval: ${p.action}`
         : p.action;
-      await saveGoal(context.home, createGoal({ id: p.id, statement }));
+      await saveGoal(context.home, createGoal({ id: p.id, statement, origin: { kind: "owner", via: "telegram" } }));
       return { id: p.id, created: true };
     },
     listMissions: async () => {

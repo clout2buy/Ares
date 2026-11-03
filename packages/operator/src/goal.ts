@@ -24,6 +24,7 @@ export function createGoal(input: {
   verification?: VerificationSpec;
   mode?: Goal["mode"];
   consent?: Goal["consent"];
+  origin?: Goal["origin"];
   now?: Date;
 }): Goal {
   const at = (input.now ?? new Date()).toISOString();
@@ -35,6 +36,7 @@ export function createGoal(input: {
     status: "active",
     ...(input.mode ? { mode: input.mode } : {}),
     ...(input.consent ? { consent: input.consent } : {}),
+    ...(input.origin ? { origin: input.origin } : {}),
     missionIds: input.missionIds ?? [],
     progress: 0,
     noProgressStreak: 0,

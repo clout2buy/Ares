@@ -403,6 +403,9 @@ export function operatorGoalGate(
     const scope = goalMandateScope(goal);
     if (goal.consent?.approvalId) {
       await store.ensure({ source: "operator", scope, grantedBy: { kind: "owner_message", messageId: goal.consent.approvalId }, may: `work on: ${goal.statement.slice(0, 160)}`, grantedAt: goal.consent.at });
+    } else if (goal.origin?.kind === "owner") {
+      const at = goal.origin.createdAt ?? goal.createdAt;
+      await store.ensure({ source: "operator", scope, grantedBy: { kind: "owner_created", what: `goal (${goal.origin.via})`, at }, may: `work on: ${goal.statement.slice(0, 160)}`, grantedAt: at });
     } else if (goal.origin?.kind === "standing_order" && (goal.origin.createdBy !== "ares" || goal.origin.approved === true) && goal.origin.approved !== false) {
       const at = goal.origin.createdAt ?? goal.createdAt;
       await store.ensure({ source: "operator", scope, grantedBy: { kind: "owner_created", what: "standing order", at }, may: `run the standing order: ${goal.statement.slice(0, 160)}`, grantedAt: at });

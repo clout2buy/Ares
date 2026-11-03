@@ -39,7 +39,7 @@ export async function operatorCommand(args: ParsedArgs): Promise<number> {
     }
     const criteria = textListFlag(args.flags.get("criteria") ?? args.flags.get("criterion"));
     const constraints = textListFlag(args.flags.get("constraint") ?? args.flags.get("constraints"));
-    const goal = createGoal({ id: newGoalId(), statement, verification: verificationProbes[0] });
+    const goal = createGoal({ id: newGoalId(), statement, verification: verificationProbes[0], origin: { kind: "owner", via: "cli" } });
     const attached = await ensureGoalMissionContract(home, goal, {
       acceptanceCriteria: criteria,
       constraints,
@@ -295,7 +295,7 @@ export async function operatorCommand(args: ParsedArgs): Promise<number> {
       }
       await ensureGoalMissionContract(
         home,
-        createGoal({ id: newGoalId(), statement, verification: verificationProbes[0] }),
+        createGoal({ id: newGoalId(), statement, verification: verificationProbes[0], origin: { kind: "owner", via: "cli" } }),
         {
           acceptanceCriteria: textListFlag(args.flags.get("criteria") ?? args.flags.get("criterion")),
           constraints: textListFlag(args.flags.get("constraint") ?? args.flags.get("constraints")),

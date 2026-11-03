@@ -221,3 +221,14 @@ test("daemon boot reuses its primary session id only while it is still empty", a
   rows.set("sess_0123456789abcdef", { messages: [{}], events: 3 });
   assert.equal(await reusablePrimaryId(home, kernel), undefined, "a conversation: mint a new one");
 });
+
+test("operator: a goal the owner made directly runs without a separate approval", async () => {
+  const store = new MandateStore({ home: await makeHome() });
+  const gate = operatorGoalGate(store);
+  for (const via of ["cli", "telegram", "chat"]) {
+    const goal = createGoal({ id: `g_owner_${via}`, statement: "fix the build", origin: { kind: "owner", via } });
+    assert.equal(await gate(goal), true, `owner goal via ${via} runs`);
+  }
+  const unasked = createGoal({ id: "g_ares", statement: "relaunch the minecraft server" });
+  assert.equal(await gate(unasked), false, "an Ares-made goal is still observed");
+});

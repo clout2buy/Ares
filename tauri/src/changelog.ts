@@ -40,7 +40,7 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.68.0",
+    version: "0.68.1",
     date: "November 2026",
     title: "Know what it's doing",
     tagline: "Ares tells you what it's doing while it works, never leaves a message without a reply, and stays sharp deep into long jobs.",

@@ -144,10 +144,21 @@ test("real PowerShell: a parse error that remains is returned with the parser se
     { command: "Write-Output ok\n$x = (1 && 2)", description: "t", timeout: 60000 },
     ctx(tmp),
   );
-  assert.ok(r.failure, "still fails");
-  assert.doesNotMatch(r.output.stderr, /CLIXML|_x000D_|&amp;/, "the error stream reaches the model as text, not CLIXML");
   if (/5\.1/.test(r.output.dialect)) {
+    // 5.1: `&&` inside parentheses is not a statement chain, so it survives
+    // the rewrite and the parser still refuses it.
+    assert.ok(r.failure, "still fails");
+    assert.doesNotMatch(r.output.stderr, /CLIXML|_x000D_|&amp;/, "the error stream reaches the model as text, not CLIXML");
     assert.match(r.failure, /PowerShell refused to parse the command: .*&&/);
     assert.match(r.failure, /error at line 2, char \d+ of your script: `\$x = \(1 && 2\)`/);
+    return;
   }
+  // pwsh 7 (CI runners have it): `(1 && 2)` is valid there, so use a line that
+  // no PowerShell parses.
+  const broken = await PowerShellTool.call(
+    { command: "Write-Output ok\n$x = (1 +)", description: "t", timeout: 60000 },
+    ctx(tmp),
+  );
+  assert.ok(broken.failure, "a real parse error still fails on pwsh 7");
+  assert.doesNotMatch(broken.output.stderr, /CLIXML|_x000D_|&amp;/, "the error stream reaches the model as text, not CLIXML");
 });

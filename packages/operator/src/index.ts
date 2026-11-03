@@ -450,3 +450,24 @@ export {
   type RegressionVerdict,
   type RegressionThresholds,
 } from "./scoreboard.js";
+
+export {
+  ACTING_SOURCES,
+  PROACTIVE_SOURCES,
+  MAX_DECIDED_OBSERVATIONS,
+  MandateStore,
+  defaultProactiveMode,
+  describeGrant,
+  goalMandateScope,
+  mandatesFile,
+  operatorGoalGate,
+  type GateRequest,
+  type GateResult,
+  type Mandate,
+  type MandateFile,
+  type MandateGrant,
+  type Observation,
+  type ObservationStatus,
+  type ProactiveMode,
+  type ProactiveSource,
+} from "./mandates.js";

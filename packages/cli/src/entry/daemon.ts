@@ -81,11 +81,13 @@ import { embeddedBridge, setExtensionBrowserBridge } from "./browserBridge.js";
 import { getAgentComputer } from "@ares/tools";
 import { BrowserBridgeServer } from "@ares/browser-extension-connector";
 import { garrisonCommand } from "./garrisonCmd.js";
+import { createDaemonMandates } from "./daemon/mandates.js";
 import { RemoteAgentClient } from "../remoteAgentClient.js";
 import { fileURLToPath } from "node:url";
 import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, clampEffortToModel, type ProviderSelection } from "./providers.js";
-import { ParsedArgs, cliVersion, transitionPermissionMode } from "./runtime.js";
+import { ParsedArgs, cliRuntimeContext, cliVersion, transitionPermissionMode } from "./runtime.js";
+import { rememberPrimaryId, reusablePrimaryId } from "./daemon/primarySession.js";
 import { LiveSession, chatContextBudget, contextControls, primeContextCeilings, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { PluginHost } from "@ares/plugins";
 import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
@@ -256,12 +258,21 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   let live: LiveSession;
   let browserExtensionBridge: BrowserBridgeServer | null = null;
   try {
+    // Reuse last boot's primary id while it is still empty (daemon/primarySession.ts):
+    // a new id per launch left one blank session behind every start.
+    const bootContext = cliRuntimeContext();
+    const reusePrimary = await reusablePrimaryId(
+      bootContext.home,
+      await openWorkspaceSessionKernel(bootContext.workspace).catch(() => undefined),
+    );
     live = await createSession(args, undefined, requestPermission, {
       // The daemon owns a richer visible pipeline than Session itself: routing,
       // preparation, persona, vision, failover, verification, and NDJSON events.
       // Never let the constructor execute recovered work behind that pipeline.
       detachedStartupRecovery: false,
+      ...(reusePrimary ? { sessionId: reusePrimary } : {}),
     });
+    void rememberPrimaryId(live.context.home, live.session.meta.id);
     // This daemon is the desktop app's engine (ARES_SURFACE overrides for other
     // embedders). Every session it opens is stamped so the cross-surface digest
     // and guest isolation can tell surfaces and tenants apart on disk.
@@ -1289,6 +1300,15 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       return { ok: out.code === 0, path: dest, ...(out.code === 0 ? {} : { error: (out.stderr || out.stdout).trim().slice(0, 300) }) };
     },
   });
+  // ─── Mandates for unasked work (daemon/mandates.ts) ────────────────────
+  // Declared before the loop it wakes; wakeOperator reads it lazily.
+  let wakeOperatorLoop: (() => void) | undefined;
+  const mandates = createDaemonMandates({
+    home: live.context.home,
+    emit: (payload) => process.stdout.write(JSON.stringify(payload) + "\n"),
+    runJobNow: (jobId) => desktopJobs.change(jobId, "run"),
+    wakeOperator: () => wakeOperatorLoop?.(),
+  });
   // ─── Scheduled jobs (daemon/jobs.ts) ───────────────────────────────────
   const desktopJobs = new DesktopJobs({
     home: live.context.home,
@@ -1296,6 +1316,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     agentExists: (id) => Boolean(desktopAgents.get(id)),
     roomName: (id) => desktopRooms.store.get(id)?.name,
     wake: async (job, text) => desktopAgents.wake(job.agentId, text, `job_${job.id}_${Date.now()}`),
+    gate: (job) => mandates.jobGate(job),
   });
   await desktopJobs.load().catch(() => []);
   desktopJobs.start();
@@ -2337,8 +2358,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               }
             },
             onError: () => {},
+            // Mandate gate: an unasked goal with no mandate is recorded, not run.
+            gate: mandates.goalGate,
           },
         );
+  wakeOperatorLoop = autotickLoop ? () => autotickLoop.enqueueEvent({ kind: "mandate_approved" }) : undefined;
   autotickLoop?.start();
   if (autotickLoop) {
     const why = [
@@ -3162,6 +3186,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         }
         continue;
       }
+      // ─── Mandates: the "Ares wanted to" list ───────────────────────────
+      if (command.type === "mandates_list" || command.type === "mandate_decide" || command.type === "mandate_revoke" || command.type === "proactive_mode_set") {
+        await mandates.handle(command as unknown as Record<string, unknown>);
+        continue;
+      }
       // ─── Scheduled jobs ────────────────────────────────────────────────
       if (command.type === "jobs_list" || command.type === "job_add" || command.type === "job_change") {
         const kind = command.type;
@@ -3183,6 +3212,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             const action = command.action;
             if (!id) throw new JobError("job_change requires id");
             if (action !== "pause" && action !== "resume" && action !== "delete" && action !== "run") throw new JobError("action must be pause, resume, delete or run");
+            // The owner pressing run/resume IS an authorization (daemon/mandates.ts).
+            await mandates.ownerJobAct(id, action, desktopJobs.get(id)?.title);
             await desktopJobs.change(id, action);
           }
         } catch (error) {

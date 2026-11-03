@@ -150,6 +150,10 @@ export interface DesktopJobsDeps {
   wake(job: AgentJob, text: string): Promise<string | undefined>;
   agentExists(agentId: string): boolean;
   roomName(roomId: string): string | undefined;
+  /** Mandate gate (daemon/mandates.ts), asked before EVERY run so a revoked
+   *  mandate stops the next one. run:false = record, don't run; stop:true =
+   *  its mandate was revoked, so the job is paused. Absent = no gate. */
+  gate?(job: AgentJob): Promise<{ run: boolean; stop?: boolean; note?: string; release?: () => Promise<unknown> }>;
   now?: () => number;
 }
 
@@ -285,6 +289,26 @@ export class DesktopJobs {
       for (const job of this.jobs) {
         if (job.status !== "active" || !job.nextRunAt || Date.parse(job.nextRunAt) > nowMs) continue;
         if (!this.deps.agentExists(job.agentId)) { job.status = "paused"; dirty = true; continue; }
+        let release: (() => Promise<unknown>) | undefined;
+        if (this.deps.gate) {
+          // No answer is not a yes: a failing gate holds the run.
+          const verdict: { run: boolean; stop?: boolean; note?: string; release?: () => Promise<unknown> } =
+            await this.deps.gate(job).catch(() => ({ run: false, stop: false, note: "mandate check failed" }));
+          release = verdict.release;
+          if (!verdict.run) {
+            job.lastRun = { at: new Date(nowMs).toISOString(), ok: false, note: (verdict.note ?? "observed — waiting for the owner's go-ahead").slice(0, 200) };
+            const next = nextRun(job.schedule, new Date(nowMs));
+            if (verdict.stop || job.schedule.kind === "once" || !next) {
+              // Revoked, or a one-shot: park it. Approving runs it via change("run").
+              job.status = "paused";
+              delete job.nextRunAt;
+            } else {
+              job.nextRunAt = next.toISOString();
+            }
+            dirty = true;
+            continue;
+          }
+        }
         const roomName = job.roomId ? this.deps.roomName(job.roomId) : undefined;
         let thread: string | undefined;
         try {
@@ -295,7 +319,11 @@ export class DesktopJobs {
           dirty = true;
           continue;
         }
-        if (!thread) continue; // busy: next tick
+        if (!thread) {
+          // busy: next tick — and a one-time approval this run spent is handed back
+          if (release) await release().catch(() => undefined);
+          continue;
+        }
         // claimed: move the clock before anything else can see it due
         const next = nextRun(job.schedule, new Date(nowMs));
         job.runs += 1;

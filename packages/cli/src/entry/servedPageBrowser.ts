@@ -5,7 +5,36 @@
 import type { AccessibilityNode, BrowserConnector, BrowserState, ConsoleEntry, PointerGesture, Screenshot } from "@ares/connectors";
 import { PAGE_GONE, drivablePage, drivePage, rootChangedSince, waitForDrivablePage } from "./previewServer.js";
 
-export function createServedPageBrowser(root: string, origin: string, page: { id: string; url: string }): BrowserConnector {
+/** Where a loopback URL outside this connector's folder is served now (a dev
+ *  server fronted by Ares, another served folder), with its open page. */
+export interface ServedReroute {
+  root: string;
+  origin: string;
+  url: string;
+  page: { id: string; url: string };
+}
+
+export interface ServedPageOptions {
+  /** Origins that ARE this page under another name: the dev server Ares
+   *  fronts (http://127.0.0.1:5183 behind the served proxy origin), a
+   *  remembered port re-served elsewhere. Navigating there stays here. */
+  aliases?: Record<string, string>;
+  /** Show another loopback address in the Forge and drive it from here on
+   *  (any port on localhost / 127.0.0.1 / [::1]). Null when nothing answers. */
+  reroute?: (url: string) => Promise<ServedReroute | null>;
+}
+
+const LOOPBACK_HOST = /^(?:127\.0\.0\.1|localhost|\[::1\])$/i;
+
+export function createServedPageBrowser(
+  rootAtStart: string,
+  originAtStart: string,
+  page: { id: string; url: string },
+  opts: ServedPageOptions = {},
+): BrowserConnector {
+  let root = rootAtStart;
+  let origin = originAtStart;
+  const aliases = new Map(Object.entries(opts.aliases ?? {}));
   let pageId = page.id;
   let lastUrl = page.url;
   // Always the newest open copy: a reload (Ares's own edit, the owner's ↻)
@@ -46,10 +75,30 @@ export function createServedPageBrowser(root: string, origin: string, page: { id
   };
   return {
     name: "forge-page",
-    strategy: `page:${origin}`,
+    get strategy() {
+      return `page:${origin}`;
+    },
     async navigate(url: string): Promise<BrowserState> {
-      const target = new URL(url, lastUrl || origin);
-      if (target.origin !== origin) throw new Error(`${target.href} is outside the served folder (${origin}); the Forge page can only go to its own pages`);
+      let target = new URL(url, lastUrl || origin);
+      const alias = aliases.get(target.origin);
+      if (alias) target = new URL(`${target.pathname}${target.search}${target.hash}`, alias);
+      if (target.origin !== origin) {
+        // Field (Oct 20 - Nov 2): "http://127.0.0.1:5183/ is outside the served
+        // folder" x7 — the owner's own dev server refused because the page in
+        // the Forge was a different local origin. Any loopback port opens.
+        const moved = LOOPBACK_HOST.test(target.hostname) && opts.reroute ? await opts.reroute(target.href) : null;
+        if (!moved) {
+          throw new Error(LOOPBACK_HOST.test(target.hostname)
+            ? `Nothing is running at ${target.origin}. Start the project's dev server in the background, wait until it listens, then open ${target.href} again — it shows in the Forge.`
+            : `${target.href} is a website, not this local page: open it with Browser {action:"open", url} and it shows in the Forge view.`);
+        }
+        aliases.set(target.origin, moved.origin);
+        root = moved.root;
+        origin = moved.origin;
+        pageId = moved.page.id;
+        lastUrl = moved.page.url;
+        target = new URL(moved.url);
+      }
       if (lastUrl && target.href === new URL(lastUrl).href) return state();
       const since = Date.now();
       await run("navigate", { url: target.href }, 5_000).catch(() => undefined);

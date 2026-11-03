@@ -19,7 +19,7 @@ import {
   shellRepositoryInstructionDecision,
   shellWatchdogFor,
 } from "./_shared.js";
-import { classifyShellFailure, shellFlavorOf, type ShellFlavor } from "./shellHints.js";
+import { classifyShellFailure, decodeClixml, shellFlavorOf, type ShellFlavor } from "./shellHints.js";
 import { adoptLeftovers, describeAdopted, mayDetachProcesses } from "./ProcessOwner.js";
 import type { ShellRegistry } from "./ShellRegistry.js";
 import { looksLikeTestCommand, summarizeTestOutput, testSummaryMinChars } from "./testSummary.js";
@@ -428,7 +428,8 @@ export async function runShell(
           await captureDone;
         }
         const stdout = decodeOutput(Buffer.concat(stdoutChunks));
-        const stderr = decodeOutput(Buffer.concat(stderrChunks));
+        // powershell.exe -EncodedCommand writes its error stream as CLIXML.
+        const stderr = decodeClixml(decodeOutput(Buffer.concat(stderrChunks)));
         const truncatedOut = stdoutDropped || stdout.length > MAX_OUTPUT_CHARS;
         const truncatedErr = stderrDropped || stderr.length > MAX_OUTPUT_CHARS;
         const truncated = truncatedOut || truncatedErr;

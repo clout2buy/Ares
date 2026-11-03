@@ -28,7 +28,7 @@ import { Filmstrip, browserActionEffect, clickEffect, createPlaywrightBrowser, f
 import { Budget, KillSwitch, Ledger, ownerLeash, runEffect, type ApprovalDecision, type RailsContext, type BudgetLimits } from "@ares/effects";
 import { CliRuntimeContext } from "./runtime.js";
 import { drivableRoots, lastRescueFor, serveDevServer, serveLocalTarget, servedForUrl, waitForDrivablePage } from "./previewServer.js";
-import { createServedPageBrowser } from "./servedPageBrowser.js";
+import { createServedPageBrowser, type ServedReroute } from "./servedPageBrowser.js";
 import { claimForge, forgeCdpUrl, forgeViewUp, forgeWaitMs, isForgeStrategy } from "./forgeView.js";
 import { FORGE_KIT_MARKER, buildStudioHtml, expandForgeKit, renderExplainer } from "./forgeKit.js";
 import { FORGE_SCRIPT_DOCS } from "./forgeScriptDocs.js";
@@ -865,6 +865,22 @@ export function makeBrowserTool(
         // say what is wrong and what fixes it, so the agent fixes it itself.
         const wanted = (i.action === "open" || i.action === "preview") ? i.url : i.action === "act" && i.steps?.[0]?.action === "open" ? i.steps[0].url : undefined;
         const local = wanted ? (() => { try { const u = new URL(wanted); return /^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname) && u.port ? u : null; } catch { return null; } })() : null;
+        // No native view in this build (browser preview, a server): a website
+        // the owner asked for is still put in the Forge's live stage rather
+        // than refused (field: "There is no Forge here" x10). It is shown, not
+        // driven: no hidden browser stands behind it.
+        if (!forge && !local && wanted && /^https?:\/\//i.test(wanted) && (i.action === "open" || i.action === "preview") && ctx?.emitProgress) {
+          emitTarget({ url: wanted, title: "" });
+          return {
+            output: {
+              action: i.action,
+              status: "shown",
+              note: `Sent ${wanted} to the Forge's live stage for the owner. This build has no native Forge view, so Ares cannot read or click this website here; local pages and dev servers (http://127.0.0.1:<port>) are fully drivable.`,
+              filmstripDir: filmstripDir(strip),
+            },
+            display: `shown in the Forge: ${wanted}`,
+          };
+        }
         if (local) {
           throw new Error(`Nothing is running at ${local.origin}. Start the project's dev server in the background (find its folder yourself), wait until it listens, then open ${local.href} again — it shows in the Forge.`);
         }
@@ -1321,6 +1337,7 @@ export function makeBrowserTool(
   };
 
   const act = def.call;
+  const pausedNoted = new Set<string>();
   return buildTool({
     ...def,
     async call(i, ctx) {
@@ -1346,7 +1363,9 @@ export function makeBrowserTool(
         if (!prints.size) return result;
         return { ...result, output: redactDeep(result.output, redact), ...(result.display ? { display: redact(result.display) } : {}) };
       } catch (err) {
-        if (err instanceof Error && err.name === "HaltedError") err.message = haltedBrowserMessage(err.message);
+        if (err instanceof Error && err.name === "HaltedError") {
+          return browserPausedResult(i.action, err.message, ctx.sessionId, pausedNoted);
+        }
         if (err instanceof Error && prints.size) err.message = redact(err.message);
         throw err;
       } finally {
@@ -1369,7 +1388,32 @@ export function makeBrowserTool(
  */
 export function haltedBrowserMessage(message: string): string {
   if (/do not retry/i.test(message)) return message;
-  return `${message}. This is the owner's operator kill switch: every outward Browser action (click, fill, opening a website) is refused until the owner releases it, so do not retry or work around it. Tell the owner; they release it with \`ares operator resume\` (or Resume in the operator controls). Pages on this machine (served project files, local dev servers) still open.`;
+  return `${message}. This is the owner's operator kill switch: every outward Browser action (click, fill, opening a website) is refused until the owner releases it, so do not retry or work around it. Tell the owner; they release it with Resume on the "hands are paused" card in chat (or \`ares operator resume\`). Pages on this machine (served project files, local dev servers) still open.`;
+}
+
+/**
+ * A Browser action refused by the kill switch, as a RESULT rather than a tool
+ * error. Field window Sep 9 - Oct 20: one forgotten HALT produced 30 tool
+ * errors in 21 sessions, each an "effect status unknown" scare the model tried
+ * to reconcile. Now the first refusal in a session carries the full note, and
+ * later ones a one-line reminder; neither is an error, and both say plainly
+ * that nothing was done. `noted` holds the sessions already told.
+ */
+export function browserPausedResult(
+  action: string,
+  haltMessage: string,
+  sessionId: string,
+  noted: Set<string>,
+): { output: { action: string; status: string; performed: false; note: string; filmstripDir: string }; display: string } {
+  const first = !noted.has(sessionId);
+  noted.add(sessionId);
+  const note = first
+    ? `ACTION NOT PERFORMED. Ares's hands are paused: ${haltedBrowserMessage(haltMessage)}`
+    : "ACTION NOT PERFORMED: Ares's hands are still paused by the owner (see the earlier note). Do not retry; tell the owner if this blocks the task.";
+  return {
+    output: { action, status: "paused", performed: false, note, filmstripDir: "" },
+    display: "hands paused by the owner: nothing done",
+  };
 }
 
 /** What the watch card calls this browser: the site it's on, else a plain name. */
@@ -1526,22 +1570,42 @@ async function servedPageFor(
   // An act that opens a page first ("open, wait, click Play") is an open too.
   const openUrl = (i.action === "open" || i.action === "preview") ? i.url
     : i.action === "act" && i.steps?.[0]?.action === "open" ? i.steps[0].url : undefined;
+  // Later navigations to another local address (any port) switch the Forge
+  // to it instead of refusing it as "outside the served folder".
+  const reroute = (url: string) => showServed(url, ctx, emitTarget, cwd);
   if (openUrl) {
-    // A file path, or the loopback address of a page Ares already serves.
-    // A file path, the loopback address of a page Ares serves, or the
-    // project's own dev server (Vite & co), fronted so its pages can be driven.
-    const served = (await serveLocalTarget(openUrl, { sessionId: ctx?.sessionId, cwd }).catch(() => null))
-      ?? (await servedForUrl(openUrl))
-      ?? (await serveDevServer(openUrl, { sessionId: ctx?.sessionId }).catch(() => null));
-    if (!served) return null;
-    const open = (await drivableRoots()).find((r) => r.root === served.root);
-    if (!open) emitTarget({ url: served.url });
-    const page = await waitForDrivablePage(served.root, Number(process.env.ARES_PAGE_DRIVER_WAIT_MS) || 8_000);
-    return page ? createServedPageBrowser(served.root, served.origin, page) : null;
+    const shown = await showServed(openUrl, ctx, emitTarget, cwd);
+    if (!shown) return null;
+    // The model navigates to the address it asked for (the dev server's own
+    // origin); that address IS the fronted page.
+    const asked = (() => { try { return new URL(openUrl).origin; } catch { return null; } })();
+    const aliases = asked && asked !== "null" && asked !== shown.origin ? { [asked]: shown.origin } : {};
+    return createServedPageBrowser(shown.root, shown.origin, shown.page, { aliases, reroute });
   }
   if (!continuing) return null;
   const newest = (await drivableRoots()).find((r) => `page:${new URL(r.url).origin}` === continuing);
   if (!newest) return null;
   const page = await waitForDrivablePage(newest.root, 0);
-  return page ? createServedPageBrowser(newest.root, new URL(newest.url).origin, page) : null;
+  return page ? createServedPageBrowser(newest.root, new URL(newest.url).origin, page, { reroute }) : null;
+}
+
+/**
+ * Serve a local target and put it in the Forge: a file path, the loopback
+ * address of a page Ares serves, or the project's own dev server (Vite & co),
+ * fronted so its pages can be driven. Null when nothing local answers.
+ */
+async function showServed(
+  url: string,
+  ctx: RichToolContext | undefined,
+  emitTarget: (state: { url?: string; title?: string }) => void,
+  cwd: string,
+): Promise<ServedReroute | null> {
+  const served = (await serveLocalTarget(url, { sessionId: ctx?.sessionId, cwd }).catch(() => null))
+    ?? (await servedForUrl(url))
+    ?? (await serveDevServer(url, { sessionId: ctx?.sessionId }).catch(() => null));
+  if (!served) return null;
+  const open = (await drivableRoots()).find((r) => r.root === served.root);
+  if (!open) emitTarget({ url: served.url });
+  const page = await waitForDrivablePage(served.root, Number(process.env.ARES_PAGE_DRIVER_WAIT_MS) || 8_000);
+  return page ? { root: served.root, origin: served.origin, url: served.url, page } : null;
 }

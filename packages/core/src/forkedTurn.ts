@@ -38,6 +38,10 @@ export interface ForkedTurnOptions {
   seed: ForkedTurnSeed;
   /** Live per-event hook — e.g. surfacing a subagent's tool activity to the parent UI. */
   onEvent?: (event: TurnEvent) => void;
+  /** Give a child that ends without any text one tool-less turn to write its
+   *  answer (see SUBAGENT_ANSWER_NUDGE). Subagents set this; the operator
+   *  dispatcher does not. */
+  answerNudge?: boolean;
 }
 
 export interface ForkedTurnResult {
@@ -72,6 +76,7 @@ export async function runForkedTurn(opts: ForkedTurnOptions): Promise<ForkedTurn
 
   let engine: QueryEngine;
   let stream: AsyncGenerator<TurnEvent>;
+  let nudgeStream: () => AsyncGenerator<TurnEvent>;
   let durableWorkStatus: WorkStatus | undefined;
   if (requiresDurableHost) {
     // Compatibility callers used to be able to fork an effectful tool catalog
@@ -98,6 +103,7 @@ export async function runForkedTurn(opts: ForkedTurnOptions): Promise<ForkedTurn
       ...(opts.inputId ? { inputId: opts.inputId } : {}),
       source: opts.seed.kind === "work-item" ? "work-item" : "user-input",
     });
+    nudgeStream = () => session.sendContent([{ type: "text", text: SUBAGENT_ANSWER_NUDGE }], { source: "work-item" });
   } else {
     engine = new QueryEngine(config, opts.sessionId);
     switch (opts.seed.kind) {
@@ -112,6 +118,10 @@ export async function runForkedTurn(opts: ForkedTurnOptions): Promise<ForkedTurn
         break;
     }
     stream = engine.streamTurn();
+    nudgeStream = () => {
+      engine.appendWorkItem(SUBAGENT_ANSWER_NUDGE);
+      return engine.streamTurn();
+    };
   }
 
   const events: TurnEvent[] = [];
@@ -142,16 +152,97 @@ export async function runForkedTurn(opts: ForkedTurnOptions): Promise<ForkedTurn
   }
 
   const history = engine.history();
+  const finalText = lastAssistantText(history);
+
+  if (!finalText && opts.answerNudge && answerNudgeEnabled() && !config.signal?.aborted && status !== "interrupted") {
+    const nudged = await nudgeSilentChild(
+      { engine, events, streamedText, usage, status, workStatus },
+      nudgeStream,
+      () => engine.history(),
+      opts.onEvent,
+    );
+    return { engine, ...nudged };
+  }
+
+  return { engine, events, history, streamedText, finalText, usage, status, workStatus };
+}
+
+/**
+ * The one extra turn a child gets when it ends without writing a word. Field
+ * window Sep 20 - Nov 2: 26 of 29 subagent runs "failed", 16 of them as
+ * "(subagent produced no text output)" right after a failing PowerShell call:
+ * the child hit its turn budget or a stall mid-tool and never wrote the answer
+ * the parent was waiting for. One tool-less nudge recovers most of them.
+ * ARES_SUBAGENT_ANSWER_NUDGE=0 turns it off.
+ */
+export const SUBAGENT_ANSWER_NUDGE =
+  "You stopped without writing your answer. Do not call any more tools. Write your final answer now: what you found or did, " +
+  "what failed (quote the error), and what is left undone.";
+
+export function answerNudgeEnabled(): boolean {
+  return process.env.ARES_SUBAGENT_ANSWER_NUDGE !== "0";
+}
+
+/** Text of the last assistant message in `history` (the canonical answer). */
+export function lastAssistantText(history: readonly Message[]): string {
   const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
-  const finalText = lastAssistant
+  return lastAssistant
     ? lastAssistant.content
         .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
         .map((b) => b.text)
         .join("\n")
         .trim()
     : "";
+}
 
-  return { engine, events, history, streamedText, finalText, usage, status, workStatus };
+/**
+ * Run the answer nudge on a child that ended silent: one model iteration
+ * (maxTurns 1), events appended to the run's own list. Returns the merged
+ * result; when the nudge produced text, its turn status replaces the silent
+ * one (the child did answer), otherwise the original status stands.
+ */
+export async function nudgeSilentChild(
+  base: Omit<ForkedTurnResult, "history" | "finalText">,
+  stream: () => AsyncGenerator<TurnEvent>,
+  history: () => readonly Message[],
+  onEvent?: (event: TurnEvent) => void,
+): Promise<{ events: TurnEvent[]; streamedText: string; usage: Usage; status: TurnEndStatus; workStatus: WorkStatus; history: readonly Message[]; finalText: string }> {
+  const events = [...base.events];
+  let streamedText = base.streamedText;
+  let usage = base.usage;
+  let nudgeStatus: TurnEndStatus = "completed";
+  let nudgeWork: WorkStatus | undefined;
+  base.engine.setMaxTurns(1);
+  try {
+    for await (const event of stream()) {
+      events.push(event);
+      onEvent?.(event);
+      if (event.type === "text_delta") streamedText += event.text;
+      else if (event.type === "turn_end") {
+        usage = {
+          ...usage,
+          inputTokens: usage.inputTokens + event.usage.inputTokens,
+          outputTokens: usage.outputTokens + event.usage.outputTokens,
+        };
+        nudgeStatus = event.status;
+        nudgeWork = event.workStatus;
+      } else if (event.type === "error") nudgeStatus = "failed";
+    }
+  } catch {
+    nudgeStatus = "failed";
+  }
+  const after = history();
+  const finalText = lastAssistantText(after);
+  const answered = finalText.length > 0;
+  return {
+    events,
+    streamedText,
+    usage,
+    status: answered && nudgeStatus !== "failed" ? nudgeStatus : base.status,
+    workStatus: answered && nudgeWork ? nudgeWork : base.workStatus,
+    history: after,
+    finalText,
+  };
 }
 
 function forkSeedContent(seed: ForkedTurnSeed): ContentBlock[] {

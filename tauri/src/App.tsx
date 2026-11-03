@@ -35,6 +35,7 @@ import { redactSecrets } from "../../packages/protocol/src/secretRedact";
 import { daemonExitMessage } from "../../packages/protocol/src/daemonExit";
 import { createLiveExplain, settled as settledKitPage } from "./liveExplain";
 import { UpdateBanner } from "./UpdateBanner";
+import { handsPausedTitle } from "./handsPaused";
 import { PhonePairCard, type PhonePairState } from "./PhonePair";
 import { WhatsNew } from "./WhatsNew";
 import { WantedList, type MandatesVm } from "./WantedList";
@@ -865,6 +866,8 @@ function App() {
   // Operator halt state. Optimistic on click; an operator_status frame that
   // carries `halted` is authoritative and overwrites the guess on the next poll.
   const [opHalted, setOpHalted] = useState(false);
+  /** When and why the switch was engaged (the "hands are paused" card). */
+  const [opHaltInfo, setOpHaltInfo] = useState<{ at?: string; reason?: string }>({});
   /** Where Ares may work: "host" (default) or "sandbox" (its own machine only).
    *  Seeded from the daemon's computer_status so the chip never lies after a
    *  relaunch. */
@@ -2413,7 +2416,17 @@ function App() {
           });
           // Authoritative halt state when the daemon reports it; otherwise the
           // optimistic local flag from the Halt/Resume button stands.
-          if (typeof e.halted === "boolean") setOpHalted(e.halted);
+          if (typeof e.halted === "boolean") {
+            setOpHalted(e.halted);
+            setOpHaltInfo({ at: typeof e.haltedAt === "string" ? e.haltedAt : undefined, reason: typeof e.haltReason === "string" ? e.haltReason : undefined });
+          }
+          return true;
+        case "operator_control_set":
+          // The daemon's answer to Halt/Resume: the real switch state, not the guess.
+          if (typeof e.halted === "boolean") {
+            setOpHalted(e.halted);
+            setOpHaltInfo({ at: typeof e.haltedAt === "string" ? e.haltedAt : undefined, reason: typeof e.haltReason === "string" ? e.haltReason : undefined });
+          }
           return true;
         case "fleets_list":
           setFleetHistory(Array.isArray(e.fleets) ? e.fleets : []);
@@ -5609,7 +5622,9 @@ function App() {
             subagentJobs={subagentJobs}
             operatorHalted={opHalted}
             onToggleHalt={() => {
-              daemonCmd({ type: "operator_control", action: opHalted ? "resume" : "halt" });
+              daemonCmd(opHalted
+                ? { type: "operator_control", action: "resume" }
+                : { type: "operator_control", action: "halt", reason: "the Halt operator switch in HELM" });
               setOpHalted((h) => !h);
             }}
             onResumeFleet={(fleetId) =>
@@ -5826,6 +5841,19 @@ function App() {
             <div className="recoveryBody">
               <b>Other chats are waiting</b>
               <span>{loopNote}</span>
+            </div>
+          </div>
+        ) : null}
+        {/* The operator kill switch, in plain sight: a forgotten HALT once sat
+            engaged for 41 days while the only symptom was the model failing. */}
+        {opHalted && view !== "helm" ? (
+          <div className="recoveryBanner handsPaused" role="status">
+            <div className="recoveryBody">
+              <b>{handsPausedTitle(activeAgent?.name ?? "Ares", opHaltInfo.at, opHaltInfo.reason)}</b>
+              <span>Clicks, form fills and opening websites are refused until you resume. Pages on this computer still open.</span>
+            </div>
+            <div className="recoveryActions">
+              <button className="btn primary" onClick={() => { daemonCmd({ type: "operator_control", action: "resume" }); setOpHalted(false); }}>Resume</button>
             </div>
           </div>
         ) : null}
@@ -6113,7 +6141,7 @@ function App() {
             <ForgeBackgroundPanel
               jobs={active ? bgJobs[active.id] ?? [] : []}
               agents={subagentJobs}
-              opStatus={opStatus}
+              opStatus={opStatus ? { ...opStatus, halted: opHalted } : null}
               recovery={active?.pendingRecovery ?? null}
               recoveryMode={recoveryMode}
               onStop={(id) => daemonCmd({ type: "background_stop", id, sessionId: active?.id })}
@@ -6121,7 +6149,7 @@ function App() {
               onStopAgent={(jobId) => daemonCmd({ type: "interrupt", sessionId: jobId })}
               onResume={() => active && daemonCmd({ type: "startup_recovery_resume", sessionId: active.id })}
               onDiscard={() => active && daemonCmd({ type: "startup_recovery_discard", sessionId: active.id })}
-              onHalt={() => daemonCmd({ type: "operator_control", action: "halt" })}
+              onHalt={() => { daemonCmd({ type: "operator_control", action: "halt", reason: "the Pause hands button in the Background panel" }); setOpHalted(true); }}
               onRefresh={() => { daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); daemonCmd({ type: "mandates_list" }); }}
               wanted={
                 <WantedList
@@ -12339,7 +12367,7 @@ function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, 
       {opStatus && (opStatus.activeCount || opStatus.running) ? (
         <div className="bgCard">
           <div className="bgCardBody"><strong>Operator loop</strong><span>{opStatus.activeCount ?? 0} active mission{(opStatus.activeCount ?? 0) === 1 ? "" : "s"}{opStatus.halted ? " · halted" : " · running unattended"}</span></div>
-          {!opStatus.halted ? <div className="bgCardActions"><button className="btn ghost" onClick={onHalt}>Halt</button></div> : null}
+          {!opStatus.halted ? <div className="bgCardActions"><button className="btn ghost" onClick={onHalt} title="Stops every outward action (clicks, form fills, opening websites) until you press Resume on the card in chat.">Pause hands</button></div> : null}
         </div>
       ) : null}
       <div className="bgSection">Agents</div>

@@ -149,6 +149,10 @@ export interface AresEvent {
   sessions?: unknown;
   /** operator_status — the operator scheduler is halted (owner pressed Halt). */
   halted?: boolean;
+  /** operator_status / operator_control_set — when the kill switch was engaged (ISO). */
+  haltedAt?: string;
+  /** operator_status / operator_control_set — why (who pressed what). */
+  haltReason?: string;
   /** fleets_list reply — every Conductor fleet the daemon knows about. */
   fleets?: FleetSummaryWire[];
   models?: unknown;

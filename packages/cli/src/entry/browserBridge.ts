@@ -1321,6 +1321,7 @@ export function makeBrowserTool(
   };
 
   const act = def.call;
+  const pausedNoted = new Set<string>();
   return buildTool({
     ...def,
     async call(i, ctx) {
@@ -1346,7 +1347,9 @@ export function makeBrowserTool(
         if (!prints.size) return result;
         return { ...result, output: redactDeep(result.output, redact), ...(result.display ? { display: redact(result.display) } : {}) };
       } catch (err) {
-        if (err instanceof Error && err.name === "HaltedError") err.message = haltedBrowserMessage(err.message);
+        if (err instanceof Error && err.name === "HaltedError") {
+          return browserPausedResult(i.action, err.message, ctx.sessionId, pausedNoted);
+        }
         if (err instanceof Error && prints.size) err.message = redact(err.message);
         throw err;
       } finally {
@@ -1369,7 +1372,32 @@ export function makeBrowserTool(
  */
 export function haltedBrowserMessage(message: string): string {
   if (/do not retry/i.test(message)) return message;
-  return `${message}. This is the owner's operator kill switch: every outward Browser action (click, fill, opening a website) is refused until the owner releases it, so do not retry or work around it. Tell the owner; they release it with \`ares operator resume\` (or Resume in the operator controls). Pages on this machine (served project files, local dev servers) still open.`;
+  return `${message}. This is the owner's operator kill switch: every outward Browser action (click, fill, opening a website) is refused until the owner releases it, so do not retry or work around it. Tell the owner; they release it with Resume on the "hands are paused" card in chat (or \`ares operator resume\`). Pages on this machine (served project files, local dev servers) still open.`;
+}
+
+/**
+ * A Browser action refused by the kill switch, as a RESULT rather than a tool
+ * error. Field window Sep 9 - Oct 20: one forgotten HALT produced 30 tool
+ * errors in 21 sessions, each an "effect status unknown" scare the model tried
+ * to reconcile. Now the first refusal in a session carries the full note, and
+ * later ones a one-line reminder; neither is an error, and both say plainly
+ * that nothing was done. `noted` holds the sessions already told.
+ */
+export function browserPausedResult(
+  action: string,
+  haltMessage: string,
+  sessionId: string,
+  noted: Set<string>,
+): { output: { action: string; status: string; performed: false; note: string; filmstripDir: string }; display: string } {
+  const first = !noted.has(sessionId);
+  noted.add(sessionId);
+  const note = first
+    ? `ACTION NOT PERFORMED. Ares's hands are paused: ${haltedBrowserMessage(haltMessage)}`
+    : "ACTION NOT PERFORMED: Ares's hands are still paused by the owner (see the earlier note). Do not retry; tell the owner if this blocks the task.";
+  return {
+    output: { action, status: "paused", performed: false, note, filmstripDir: "" },
+    display: "hands paused by the owner: nothing done",
+  };
 }
 
 /** What the watch card calls this browser: the site it's on, else a plain name. */

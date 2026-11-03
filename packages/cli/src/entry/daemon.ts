@@ -71,6 +71,7 @@ import { runSelfTest, type SelfTestResult } from "../selfTest.js";
 import { aresAgentHome, deletePersona, listPersonas, loadAgentConfig, onLifecycle, pinOwnerMemory, runDeepDream, runSkill, skillHubProbe, skillHubList, skillHubGet, skillHubPublish, installHubSkill, readLocalSkillFiles, writePersona } from "@ares/agent";
 import { adoptPersonaByName, applyPersonaToolResult, newPersonaGate, personaForMessage, personaToWire, type PersonaGate } from "./daemon/personas.js";
 import { assembleCognitiveState } from "./daemon/cognitiveState.js";
+import { handsPausedState } from "./daemon/handsPaused.js";
 import { QueryEngineDispatcher, OperatorBackgroundLoop, deriveLeash, domainOf, isOperatorPaused, listGoals, loadStandingOrders, materializeDueStandingOrders, loadWatchers, operatorTickIntervalMs, type StandingOrder } from "@ares/operator";
 import { MemoryStore, mindPaths, reflectOnRun, detectWorkspaceProjectId, loadProjectState, buildConversationDigest, mergeDurableFacts, withConsolidationLock, CONVERSATION_REFLECT_SYSTEM, DURABLE_FACTS_SCHEMA_HINT, type DurableFact } from "@ares/mind";
 import { OAUTH_PROVIDERS, PROVIDER_LABELS, startOAuthFlow, connectedProviders, getProviderConfig, setCredential, hasCredential, deleteCredential, clientIdName, clientSecretName, runAresAccountSignin, probeAresOauth } from "@ares/core";
@@ -4588,6 +4589,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             goals: goals.map((g) => ({ id: g.id, statement: g.statement.slice(0, 160), status: g.status, progress: g.progress, steps: g.stepLog?.length ?? 0 })),
             activeCount: active.length,
             trust,
+            ...(await handsPausedState(live.context.effects.killSwitchFile)),
           }) + "\n",
         );
         continue;
@@ -4666,6 +4668,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             intervalMs: operatorTickIntervalMs(),
             goals: (await listGoals(live.context.home).catch(() => [])).map((g) => ({ id: g.id, statement: g.statement.slice(0, 160), status: g.status, progress: g.progress, steps: g.stepLog?.length ?? 0 })),
             activeCount: (await listGoals(live.context.home).catch(() => [])).filter((g) => g.status === "active").length,
+            ...(await handsPausedState(live.context.effects.killSwitchFile)),
           }) + "\n",
         );
         continue;
@@ -4682,7 +4685,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         const killSwitch = new KillSwitch(live.context.effects.killSwitchFile);
         if (action === "halt") await killSwitch.engage(typeof command.reason === "string" ? command.reason : "manual");
         else await killSwitch.release();
-        process.stdout.write(JSON.stringify({ type: "operator_control_set", action, engaged: await killSwitch.engaged() }) + "\n");
+        const paused = await handsPausedState(live.context.effects.killSwitchFile);
+        process.stdout.write(JSON.stringify({ type: "operator_control_set", action, engaged: paused.halted, ...paused }) + "\n");
         continue;
       }
       if (command.type === "live_watch") {

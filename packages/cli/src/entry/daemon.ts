@@ -126,6 +126,7 @@ import { normalizeRoutingCommand } from "./daemon/routing.js";
 import { resolveLiveRoute } from "./liveRoute.js";
 import { backupChain, decidePinnedFailover, pinnedFailoverEnabled, type PinnedFailoverDecision } from "./pinnedFailover.js";
 import { describeRetirement } from "./providerCredentialGate.js";
+import { describeUsageDeath, isRetiringProviderDeath, isUsageDeath, noReplyNotice, providerDisplayName } from "./providerDeath.js";
 import { saveReportLocally, trimRolloutForReport } from "./daemon/report.js";
 import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
@@ -467,8 +468,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     return new Set(deadProviders.keys());
   };
   const isProviderDead = (family: string): boolean => liveDeadProviders().has(family);
-  const isPermanentlyDeadError = (blob: string): boolean =>
-    /\b402\b|\b401\b|\b403\b|insufficient.?balance|unauthorized|forbidden|invalid.?api.?key|no_auth/i.test(blob);
+  // Auth deaths AND usage deaths ("out of extra usage", a used-up plan
+  // window, no credit) retire the family: see providerDeath.ts.
+  const isPermanentlyDeadError = (blob: string): boolean => isRetiringProviderDeath(blob);
   sessions.set(live.session.meta.id, primaryEntry);
   // A rate-limited turn moves to another provider instead of backing off, but
   // only when the same ladder the failed-turn path walks would find one (see
@@ -5341,7 +5343,9 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
                   tagEmit(command.sessionId, {
                     type: "system_reminder_injected",
                     source: "instructions",
-                    text: `Running on ${decision.to} — your pinned ${decision.from} is ${describeRetirement(skipReason, retiredAt)}. It stays pinned and comes back by itself once its key works; fix it under Settings → API Keys. This note shows once; the model badge on each reply shows which model answered.`,
+                    text: isUsageDeath(skipReason)
+                      ? `${describeUsageDeath(pinFamily, skipReason)}; running on ${decision.to} instead. Your pinned ${decision.from} stays pinned and is tried again by itself every ${Math.round(deadProviderTtlMs / 60_000)} min. This note shows once; the model badge on each reply shows which model answered.`
+                      : `Running on ${decision.to} — your pinned ${decision.from} is ${describeRetirement(skipReason, retiredAt)}. It stays pinned and comes back by itself once its key works; fix it under Settings → API Keys. This note shows once; the model badge on each reply shows which model answered.`,
                   });
                 }
               }
@@ -5504,6 +5508,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             commands.onInterrupt?.({ type: "interrupt", sessionId: command.sessionId } as DaemonInputCommand);
           }, STUCK_TURN_CHECK_MS) : null;
           stuckTurnTimer?.unref?.();
+          // For the no-silent-turn guarantee (see after the failover ladder).
+          let turnProducedOutput = false;
+          let lastTurnError = "";
+          let ownerToldWhy = false;
           const streamOnce = async (gen: AsyncGenerator<unknown>) => {
             let eventCount = 0;
             for await (const event of gen) {
@@ -5552,6 +5560,8 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               // settles it and refuses "done" over red verdicts.
               if (ev.touchedFiles?.length) entry.live.verifier.scheduleFor(ev.touchedFiles);
               if (ev.type === "turn_end" && ev.status) turnState.status = ev.status;
+              if ((ev.type === "text_delta" && typeof ev.text === "string" && ev.text.trim()) || ev.type === "tool_start") turnProducedOutput = true;
+              if (ev.type === "error" && ev.error?.message) lastTurnError = String(ev.error.message);
               if (ev.type === "error" && isProviderFatalError(ev.error)) {
                 turnState.fatalProvider = `${ev.error?.code ?? "provider_error"}: ${ev.error?.message ?? ""}`.slice(0, 200);
               }
@@ -5695,10 +5705,14 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             }
             if (!fallback) {
               const onAres = providerFamilyForSelection(entry.live.selection) === "ares";
+              const deadFamily = providerFamilyForSelection(entry.live.selection);
+              ownerToldWhy = true;
               tagEmit(sid, {
                 type: "system_reminder_injected",
                 source: "instructions",
-                text: overloaded
+                text: !onAres && !overloaded && isUsageDeath(turnState.fatalProvider)
+                  ? noReplyNotice(`${describeUsageDeath(deadFamily, turnState.fatalProvider)}, and no backup could take the turn (${pinnedStop ?? (routingMode === "auto" ? "no other provider is configured" : "Auto routing is off")}). Add a backup provider under Settings → API Keys, or wait for ${providerDisplayName(deadFamily)} usage to reset`)
+                  : overloaded
                   ? `${entry.live.selection.model} stayed overloaded through every retry, and no other model on ${providerFamilyForSelection(entry.live.selection)} is available to take it. This is upstream congestion, not a problem with your setup or your message — send it again in a minute, or switch model in the status bar.`
                   : onAres
                   ? `Your Ares account couldn't run this turn (${turnState.fatalProvider}). Check your credits and granted models at doingteam.com → Account — you won't be switched to another provider's key.`
@@ -5743,10 +5757,18 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             // Settings", and the message should say so (the mid-landscape
             // OpenRouter-401 session surfaced the raw error and read as a crash).
             const authDead = isPermanentlyDeadError(turnState.fatalProvider);
+            const usageDead = isUsageDeath(turnState.fatalProvider);
+            // (Not ownerToldWhy: this note explains the switch; if the backup
+            // also dies without a word, the turn still owes its reason.)
+            // One note per usage retirement: this one already says the pin
+            // sits out, so the turn-start skip note stays quiet for it.
+            if (usageDead && deadReasons.has(failedFamily)) entry.retiredPinNoted = `${failedFamily}@${deadReasons.get(failedFamily)?.at}`;
             tagEmit(sid, {
               type: "system_reminder_injected",
               source: "instructions",
-              text: pinnedSwitch
+              text: usageDead
+                ? `${describeUsageDeath(failedFamily, turnState.fatalProvider)}; switched to ${providerFamilyForSelection(fallback)}/${fallback.model}. ${providerDisplayName(failedFamily)} sits out and is tried again by itself every ${Math.round(deadProviderTtlMs / 60_000)} min${pinnedSwitch ? "; your pin is unchanged" : ""}.`
+                : pinnedSwitch
                 ? `Pinned ${pinnedSwitch.from} failed (${turnState.fatalProvider}) — finishing this turn on ${pinnedSwitch.to}${authDead ? ` (${failedFamily} is retired for this session until its key is fixed)` : ""}. Your pinned model is restored next turn.`
                 : overloaded
                 ? `${overloadedModel} is overloaded upstream — finishing this turn on ${fallback.model} instead. Your pinned model is unchanged and the next message will use it again.`
@@ -5777,6 +5799,33 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
             turnState.status = "completed";
             turnState.fatalProvider = null;
             await streamOnce(entry.live.session.resumeTurn());
+          }
+          // The guarantee: an owner turn never ends with no reply AND no
+          // reason. 63 field turns died at zero model calls with at most a raw
+          // JSON blob (or nothing, for errors the ladder does not treat as
+          // provider deaths). One plain line; the desktop's turn_end handback
+          // has already put the message back in the composer.
+          if (
+            turnState.status === "failed" &&
+            !turnProducedOutput &&
+            !ownerToldWhy &&
+            !ownerCancellationPending() &&
+            !entry.zombieTurnInputIds?.has(inputId)
+          ) {
+            ownerToldWhy = true;
+            const why = turnState.fatalProvider ?? lastTurnError;
+            const family = providerFamilyForSelection(entry.live.selection);
+            tagEmit(sid, {
+              type: "system_reminder_injected",
+              source: "instructions",
+              text: noReplyNotice(
+                why && isUsageDeath(why)
+                  ? describeUsageDeath(family, why)
+                  : why
+                    ? `${family}/${entry.live.selection.model} failed (${why})`
+                    : `${family}/${entry.live.selection.model} ended the turn without a reply`,
+              ),
+            });
           }
           // A turn that completed on a family is the proof it is back.
           if (turnState.status === "completed") deadReasons.delete(providerFamilyForSelection(entry.live.selection));

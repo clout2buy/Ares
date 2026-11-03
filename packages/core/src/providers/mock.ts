@@ -20,6 +20,30 @@ export class MockEchoProvider implements Provider {
     if (inputText.includes("__mock_fail_provider__")) {
       throw new Error("injected mock provider failure");
     }
+    if (inputText.includes("__mock_extra_usage__")) {
+      // Anthropic's subscription-exhaustion shape: a 400, not a 402/429.
+      yield {
+        type: "error",
+        error: {
+          code: "http_400",
+          message: 'Anthropic returned 400: {"type":"error","error":{"type":"invalid_request_error","message":"You\'re out of extra usage. Add more at claude.ai/settings/usage and keep going."}}',
+          retriable: false,
+        },
+      };
+      return;
+    }
+    if (inputText.includes("__mock_bad_request__")) {
+      // A 400 the failover ladder does not treat as a provider death.
+      yield {
+        type: "error",
+        error: {
+          code: "http_400",
+          message: 'Anthropic returned 400: {"type":"error","error":{"type":"invalid_request_error","message":"messages.1.content.0: unexpected block"}}',
+          retriable: false,
+        },
+      };
+      return;
+    }
     if (inputText.includes("__mock_wedge__")) {
       // A provider that ignores abort entirely: the turn can only end by the
       // daemon abandoning it (force-Stop zombie release).

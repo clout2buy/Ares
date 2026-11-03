@@ -153,4 +153,7 @@ variable, documented at its definition site. Quick index (default in parentheses
 | `ARES_CROSS_SURFACE=0`, `ARES_CROSS_SURFACE_HOURS` (24), `ARES_CROSS_SURFACE_CHARS` (1200) | "Elsewhere today" digest of the owner's other sessions. |
 | `ARES_CHECKPOINT_GIT=0`, `ARES_CHECKPOINT_MAX_AGE_DAYS` (14, 0 off), `ARES_CHECKPOINT_GC_DELAY_MS` (5000) | Git-tree checkpoint layer inside repos (blobs elsewhere); age-based retention that finally lets blob GC reclaim; deferred first sweep. `/rewind` restores files AND truncates the conversation to the checkpoint. |
 | `ARES_TOOL_TIER=legacy`, `ARES_DYNAMIC_TOOLS=0` | Restore the keyword tool router / send every tool schema. |
+| `ARES_MICROCOMPACT_TRIGGER_RATIO` (1.0) | Microcompact text rung fires when history passes this fraction of the compaction threshold (was a fixed 0.85, ~51% of a 200k Claude window). |
+| `ARES_MICROCOMPACT_TARGET_RATIO` (0.5) | One micro pass clears old tool output oldest-first until history is down to this fraction of the threshold, so passes (and their one cache miss each) are rare. |
+| `ARES_MICROCOMPACT_WORKING_SET` (8, 0 off) | Micro never clears the latest Reads (up to 3 each) of the last N files the model edited. |
 | `ARES_IMAGE_KEEP_ROUNDS` (3, 0 off) | Microcompact image rung: clear screenshots from tool_results older than the last N tool rounds, replacing each with a re-take hint; 0 keeps every image forever. |

@@ -928,7 +928,37 @@ const MICROCOMPACT_KEEP_RECENT = 6;
 // at a tenth of the price. Clearing far from the limit, a few kB at a time,
 // was a net LOSS every ~45s of a long turn. Clear only when the window needs
 // it, and in big batches.
-const MICROCOMPACT_TRIGGER_RATIO = 0.85;
+//
+// Trigger: the rung used to fire at 0.85 × threshold. For a 200k Claude model
+// the budget is 0.75 × window = 150k, the threshold 0.8 × budget = 120k, so
+// micro fired at ~102k — HALF the real window — and then again every 8 new
+// tool results (field telemetry Sep 20–Nov 2: 54 compactions per 100 turns,
+// 521 of 572 micro, the biggest prompt only 139k). Every pass rewrote the
+// history behind the rolling cache breakpoint (the Anthropic provider marks
+// the LAST message), so each one was a full cache miss, and it wiped the file
+// reads the model was coding against. It now fires only where the summarizer
+// would otherwise fire (1.0 × threshold, i.e. the next turn would not fit the
+// working budget) and clears down to a low-water mark in ONE oldest-first
+// batch: one cache miss per pass, then the rewritten prefix is stable (the
+// placeholder is a constant) and caches again, and the next pass is ~half a
+// threshold of fresh output away. ARES_MICROCOMPACT_TRIGGER_RATIO and
+// ARES_MICROCOMPACT_TARGET_RATIO tune both (fractions of the threshold).
+function microcompactTriggerRatio(): number {
+  const raw = Number(process.env.ARES_MICROCOMPACT_TRIGGER_RATIO);
+  return Number.isFinite(raw) && raw > 0 && raw <= 2 ? raw : 1.0;
+}
+function microcompactTargetRatio(): number {
+  const raw = Number(process.env.ARES_MICROCOMPACT_TARGET_RATIO);
+  return Number.isFinite(raw) && raw > 0 && raw < 1 ? raw : 0.5;
+}
+// The CURRENT working set: the most recent Reads of the last N files the model
+// edited are never cleared — those are the bytes its next Edit is matched
+// against. ARES_MICROCOMPACT_WORKING_SET tunes N (0 disables the protection).
+function microcompactWorkingSetFiles(): number {
+  const raw = Number(process.env.ARES_MICROCOMPACT_WORKING_SET);
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 8;
+}
+const MICROCOMPACT_WORKING_SET_READS_PER_FILE = 3;
 const MICROCOMPACT_MIN_RESULTS = 8;
 const MICROCOMPACT_MIN_SAVED_TOKENS = 16_000;
 const MICROCOMPACT_PLACEHOLDER =
@@ -2156,9 +2186,13 @@ export class QueryEngine {
     // the text rung, but age-gated rather than watermark-gated — a stale
     // screenshot is re-charged on every request regardless of history size.
     const imagePass = this.clearStaleScreenshots();
+    const triggerRatio = microcompactTriggerRatio();
+    const estAfterImages = imagePass
+      ? this.messages.reduce((s, m) => s + estimateMessageTokens(m), 0)
+      : estBefore;
     const textPass =
-      threshold > 0 && estBefore * this.tokenScale > threshold * MICROCOMPACT_TRIGGER_RATIO
-        ? this.microcompactTextPass()
+      threshold > 0 && estAfterImages * this.tokenScale > threshold * triggerRatio
+        ? this.microcompactTextPass(estAfterImages, threshold)
         : null;
     if (!imagePass && !textPass) return null;
 
@@ -2170,7 +2204,7 @@ export class QueryEngine {
     // watermark response, so it neither builds nor resets the thrash signal.)
     if (textPass) {
       this.ineffectiveMicroStreak =
-        estAfter * this.tokenScale > threshold * MICROCOMPACT_TRIGGER_RATIO
+        estAfter * this.tokenScale > threshold * triggerRatio
           ? this.ineffectiveMicroStreak + 1
           : 0;
     }
@@ -2276,17 +2310,29 @@ export class QueryEngine {
     return images > 0 ? { images, results, savedBytes } : null;
   }
 
-  /** The original text rung: clear a batch of old compactable tool_result
-   *  BODIES in place. Extracted so the image rung and the projection/reminder
-   *  assembly compose in microcompactIfNeeded; behavior is unchanged. */
-  private microcompactTextPass(): { cleared: number; savedChars: number } | null {
+  /** The text rung: clear old compactable tool_result BODIES in place, oldest
+   *  first, in ONE batch large enough to bring history down to the low-water
+   *  mark (microcompactTargetRatio × threshold). Oldest-first is the
+   *  cache-aware order: earlier passes already left constant placeholders at
+   *  the front, so this pass's first rewritten byte sits as late as possible
+   *  and the cached prefix before it survives. The most recent N results and
+   *  the Reads of the current working set (recently edited files) are kept. */
+  private microcompactTextPass(estBefore: number, threshold: number): { cleared: number; savedChars: number } | null {
     // tool_result blocks only carry a tool_use_id — map ids to names via the
     // assistant's tool_use blocks to know which results are compactable.
     const compactableIds = new Set<string>();
+    const readPathById = new Map<string, string>();
     for (const m of this.messages) {
       if (m.role !== "assistant") continue;
       for (const b of m.content) {
-        if (b.type === "tool_use" && isMicrocompactableTool(b.name)) compactableIds.add(b.id);
+        if (b.type === "tool_use" && isMicrocompactableTool(b.name)) {
+          compactableIds.add(b.id);
+          if (b.name === "Read") {
+            const input = b.input as Record<string, unknown> | null;
+            const fp = input?.file_path ?? input?.file ?? input?.path;
+            if (typeof fp === "string" && fp.trim()) readPathById.set(b.id, this.workingSetKey(fp));
+          }
+        }
       }
     }
     if (compactableIds.size === 0) return null;
@@ -2299,6 +2345,20 @@ export class QueryEngine {
       }
     }
     const keep = new Set(ordered.slice(-MICROCOMPACT_KEEP_RECENT));
+    // Working set: the latest few Reads of each recently edited file.
+    const workingSetFiles = microcompactWorkingSetFiles();
+    if (workingSetFiles > 0) {
+      const working = new Set(editedFilePathsFromSpan(this.messages, workingSetFiles).map((fp) => this.workingSetKey(fp)));
+      const keptPerFile = new Map<string, number>();
+      for (let i = ordered.length - 1; i >= 0; i--) {
+        const key = readPathById.get(ordered[i]);
+        if (!key || !working.has(key)) continue;
+        const n = keptPerFile.get(key) ?? 0;
+        if (n >= MICROCOMPACT_WORKING_SET_READS_PER_FILE) continue;
+        keptPerFile.set(key, n + 1);
+        keep.add(ordered[i]);
+      }
+    }
 
     const candidates: Array<{ block: ToolResultBlock; chars: number }> = [];
     for (const m of this.messages) {
@@ -2328,15 +2388,24 @@ export class QueryEngine {
       return null;
     }
 
+    // One batch, oldest first, down to the low-water mark (estimate units).
+    const targetEst = Math.floor((threshold * microcompactTargetRatio()) / this.tokenScale);
+    const needEst = Math.max(0, estBefore - targetEst);
     const clearedIds = new Set<string>();
+    let freedEst = 0;
+    let clearedChars = 0;
     for (const candidate of candidates) {
+      if (freedEst >= needEst && clearedIds.size > 0) break;
+      const before = estimateBlockTokens(candidate.block);
       candidate.block.content = MICROCOMPACT_PLACEHOLDER;
       // In-place content mutation — drop the memoized estimate so the budget
       // sees the shrink (see blockTokenMemo).
       blockTokenMemo.delete(candidate.block);
+      freedEst += Math.max(0, before - estimateBlockTokens(candidate.block));
+      clearedChars += candidate.chars;
       clearedIds.add(candidate.block.tool_use_id);
     }
-    const cleared = candidates.length;
+    const cleared = clearedIds.size;
 
     // The cleared Read/etc. bodies are GONE from the model's view — but their
     // read stamps survive. Without invalidating them, a recovery whole-file Read
@@ -2354,7 +2423,14 @@ export class QueryEngine {
         this.invalidateReadEvidence(clearedToolUses);
       }
     }
-    return { cleared, savedChars };
+    return { cleared, savedChars: clearedChars };
+  }
+
+  /** One comparable key per file however the model spelled the path
+   *  (relative/absolute, slash direction, Windows case). */
+  private workingSetKey(fp: string): string {
+    const abs = path.resolve(this.cfg.workspace, fp.trim()).replace(/\\/g, "/");
+    return process.platform === "win32" ? abs.toLowerCase() : abs;
   }
 
   private async compactIfNeeded(): Promise<Extract<TurnEvent, { type: "compaction" }> | null> {
@@ -2370,7 +2446,8 @@ export class QueryEngine {
     // Compare in REAL tokens (calibrated) against the real-token threshold.
     // Escalation: three consecutive micro passes that couldn't get below the
     // micro trigger force the real summarizer even below the threshold —
-    // otherwise the 0.72T..T band is a thrash zone micro can never exit.
+    // otherwise a band below the threshold (when ARES_MICROCOMPACT_TRIGGER_RATIO < 1)
+    // is a thrash zone micro can never exit.
     const forcedByMicroThrash = this.ineffectiveMicroStreak >= 3;
     if (!forcedByMicroThrash && estBefore * this.tokenScale <= threshold) return null;
 

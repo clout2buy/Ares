@@ -236,6 +236,8 @@ export async function printHelp(): Promise<void> {
       "  ARES_TURN_PREP_TIMEOUT_MS    Ceiling on a turn's optional context gathering before the reply goes ahead without it (default 20000, 0 = none).",
       "  ARES_ANTHROPIC_REFRESH_TIMEOUT_MS  Deadline for one Claude OAuth token refresh (default 15000).",
       "  ARES_PS_ENCODED              Set to 0 to send every PowerShell command as plain -Command (no -EncodedCommand / .ps1 spill).",
+      "  ARES_PS_CHAIN_REWRITE        Set to 0 to stop rewriting && / || into 5.1 statements before Windows PowerShell 5.1 runs a command.",
+      "  ARES_SUBAGENT_ANSWER_NUDGE   Set to 0 to skip the one extra turn a subagent gets when it ends without writing an answer.",
       "",
       "Flags:",
       "  --theme NAME                Use a UI theme for this run.",

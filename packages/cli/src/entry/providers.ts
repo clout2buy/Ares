@@ -779,9 +779,61 @@ async function buildMoaProvider(ensembleName: string): Promise<MoaProvider> {
   return new MoaProvider({ ensembleName, references, aggregator });
 }
 
+/**
+ * The family that unmistakably owns a model id, or null when the id could be
+ * served by several. Only shapes no other family uses count: an Ollama tag
+ * ("qwen3:8b", "hf.co/org/repo:Q4"), "claude-*", "gpt-5*", "deepseek-*".
+ */
+export function modelOwnerFamily(model: string): string | null {
+  const id = (model ?? "").trim();
+  if (!id) return null;
+  if (/^hf\.co\//i.test(id) || (/^[\w.-]+:[\w.-]+$/.test(id) && !id.includes("/"))) return "ollama";
+  if (/^claude-/i.test(id)) return "anthropic";
+  if (/^deepseek-/i.test(id)) return "deepseek";
+  if (/^(?:gpt-\d|o[1-9](?:-|$)|codex-)/i.test(id)) return "openai";
+  return null;
+}
+
+/** First-party families that serve only their own ids, so a foreign id sent
+ *  there can only 404 ("model not found"). Gateways and aggregators
+ *  (ares, openrouter, custom, moa) legitimately carry other vendors' ids. */
+const OWN_IDS_ONLY = new Set(["anthropic", "deepseek", "openai", "kimi"]);
+
+/**
+ * A provider/model pair that cannot work — a local "hf.co/…" Ollama id sent
+ * to Anthropic (10 verifier-child 404s in the field log) — is corrected at
+ * route time to the family that owns the id, never sent. Null when the pair
+ * is fine or the owner is unknown.
+ */
+export function correctedProviderForModel(provider: string | undefined, model: string | undefined): string | null {
+  if (!provider || !model) return null;
+  const owner = modelOwnerFamily(model);
+  if (!owner || owner === provider) return null;
+  if (OWN_IDS_ONLY.has(provider)) return owner;
+  // Ollama serves almost any open model id, but never Claude's.
+  if (provider === "ollama" && owner === "anthropic") return owner;
+  return null;
+}
+
 export async function selectProvider(flags: Map<string, string>): Promise<ProviderSelection> {
   const explicit = flags.get("provider");
   const requestedModel = flags.get("model");
+  if (requestedModel) {
+    const target = explicit ?? (await loadUiSettings()).lastProvider;
+    const corrected = correctedProviderForModel(target, requestedModel);
+    if (corrected) {
+      console.error(`route: model ${requestedModel} does not belong to ${target}; routing it to ${corrected}`);
+      return selectProvider(new Map([...flags, ["provider", corrected]]));
+    }
+    // Anthropic serves only Claude: an id of unknown origin there can only
+    // 404, so the family's own default answers instead.
+    if (target === "anthropic" && !/claude|opus|sonnet|haiku|fable|mythos/i.test(requestedModel)) {
+      console.error(`route: ${requestedModel} is not a Claude model; using Anthropic's default`);
+      const rest = new Map(flags);
+      rest.delete("model");
+      return selectProvider(rest);
+    }
+  }
   const auth = await loadAuthToken();
   const settings = await loadUiSettings();
   const preferred = explicit ?? settings.lastProvider;

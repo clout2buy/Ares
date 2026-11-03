@@ -11,6 +11,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { aresHome } from "./openaiAuth.js";
@@ -46,7 +47,79 @@ export const ANTHROPIC_OAUTH_BETA = [
 // this model; version 2.1.251 or newer is required"). Track the floor Anthropic
 // last demanded; ARES_ANTHROPIC_CLIENT_VERSION lifts it without a release.
 const ANTHROPIC_CLIENT_VERSION = (process.env.ARES_ANTHROPIC_CLIENT_VERSION ?? "").trim().match(/^\d+\.\d+\.\d+$/) ? (process.env.ARES_ANTHROPIC_CLIENT_VERSION as string).trim() : "2.1.280";
+/** The build-time floor. Kept for callers that only need a value; requests
+ *  use anthropicOAuthUserAgent(), which also carries a learned version. */
 export const ANTHROPIC_OAUTH_USER_AGENT = `claude-cli/${ANTHROPIC_CLIENT_VERSION}`;
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+function clientVersionFile(): string {
+  return path.join(aresHome(), "anthropic-client.json");
+}
+
+let learnedClientVersion: string | null | undefined;
+
+/**
+ * The client version advertised on the OAuth path: the build floor, or a
+ * newer one Anthropic demanded earlier ("Claude Code 2.1.251 does not support
+ * this model; version 2.1.280 or newer is required"). A hard-coded constant
+ * went stale between releases and every fresh chat died on its first message
+ * (four "hi" sessions in 12 minutes); the learned version lives in
+ * <ARES_HOME>/anthropic-client.json so it survives restarts.
+ */
+export function anthropicClientVersion(): string {
+  if (learnedClientVersion === undefined) {
+    learnedClientVersion = null;
+    try {
+      const raw = JSON.parse(readFileSync(clientVersionFile(), "utf8")) as { version?: unknown };
+      if (typeof raw.version === "string" && /^\d+\.\d+\.\d+$/.test(raw.version)) learnedClientVersion = raw.version;
+    } catch {
+      // no learned version yet
+    }
+  }
+  return learnedClientVersion && compareVersions(learnedClientVersion, ANTHROPIC_CLIENT_VERSION) > 0
+    ? learnedClientVersion
+    : ANTHROPIC_CLIENT_VERSION;
+}
+
+export function anthropicOAuthUserAgent(): string {
+  return `claude-cli/${anthropicClientVersion()}`;
+}
+
+/** "version 2.1.280 or newer" → "2.1.280" when the error is the client-version gate. */
+export function requiredClientVersionFromError(text: string): string | null {
+  if (!/does not support this model|version .{0,40}(?:or newer|required)|claude_code_version_too_old|version_too_old/i.test(text)) return null;
+  const m = /version\s+v?(\d+\.\d+\.\d+)\s+or\s+(?:newer|later|higher)/i.exec(text) ?? /(?:requires?|minimum)[^0-9]{0,30}(\d+\.\d+\.\d+)/i.exec(text);
+  return m ? m[1] : null;
+}
+
+/** Adopt a newer advertised version (never a lower one) and persist it.
+ *  Returns true when the version actually moved, i.e. a retry is worth it. */
+export function raiseAnthropicClientVersion(version: string): boolean {
+  if (!/^\d+\.\d+\.\d+$/.test(version)) return false;
+  if (compareVersions(version, anthropicClientVersion()) <= 0) return false;
+  learnedClientVersion = version;
+  try {
+    mkdirSync(aresHome(), { recursive: true });
+    writeFileSync(clientVersionFile(), JSON.stringify({ version, learnedAt: new Date().toISOString() }));
+  } catch {
+    // still used for this process
+  }
+  return true;
+}
+
+/** Test hook: forget the cached learned version so the file is re-read. */
+export function resetAnthropicClientVersionCache(): void {
+  learnedClientVersion = undefined;
+}
 export const ANTHROPIC_OAUTH_X_APP = "cli";
 export const ANTHROPIC_OAUTH_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
@@ -213,7 +286,7 @@ async function exchangeCode(
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      "User-Agent": ANTHROPIC_OAUTH_USER_AGENT,
+      "User-Agent": anthropicOAuthUserAgent(),
     },
     body: JSON.stringify({
       grant_type: "authorization_code",
@@ -371,7 +444,7 @@ async function exchangeRefreshToken(
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      "User-Agent": ANTHROPIC_OAUTH_USER_AGENT,
+      "User-Agent": anthropicOAuthUserAgent(),
     },
       body: JSON.stringify({
         grant_type: "refresh_token",

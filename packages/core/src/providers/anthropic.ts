@@ -45,7 +45,9 @@ import {
   resolveAnthropicAccessToken,
   ANTHROPIC_OAUTH_BETA,
   ANTHROPIC_OAUTH_IDENTITY,
-  ANTHROPIC_OAUTH_USER_AGENT,
+  anthropicOAuthUserAgent,
+  raiseAnthropicClientVersion,
+  requiredClientVersionFromError,
   ANTHROPIC_OAUTH_X_APP,
 } from "./anthropicAuth.js";
 
@@ -146,7 +148,7 @@ export class AnthropicProvider implements Provider {
     } else if (oauthToken) {
       headers["Authorization"] = `Bearer ${oauthToken}`;
       headers["anthropic-beta"] = extraBeta ? `${ANTHROPIC_OAUTH_BETA},${extraBeta}` : ANTHROPIC_OAUTH_BETA;
-      headers["User-Agent"] = ANTHROPIC_OAUTH_USER_AGENT;
+      headers["User-Agent"] = anthropicOAuthUserAgent();
       headers["x-app"] = ANTHROPIC_OAUTH_X_APP;
       headers["anthropic-dangerous-direct-browser-access"] = "true";
       const existingSystem = Array.isArray(body.system) ? body.system : [];
@@ -177,6 +179,8 @@ export class AnthropicProvider implements Provider {
     let consumedErrorText: string | undefined;
     let passbackRetried = false;
     let effortRetried = false;
+    let versionRetried = false;
+    let tacticalRetried = false;
     for (;;) {
       try {
         response = await this.fetchImpl(url, {
@@ -203,6 +207,20 @@ export class AnthropicProvider implements Provider {
         return;
       }
       guard.reset();
+      // The OAuth client-version gate ("Claude Code 2.1.251 does not support
+      // this model; version 2.1.280 or newer is required") killed every fresh
+      // chat on its first message whenever the advertised version went stale.
+      // Adopt the version the error names, persist it, retry once.
+      if (!response.ok && oauthToken && !versionRetried && response.status >= 400 && response.status < 500) {
+        const errText = await response.text().catch(() => "");
+        const needed = requiredClientVersionFromError(errText);
+        if (needed && raiseAnthropicClientVersion(needed)) {
+          versionRetried = true;
+          headers["User-Agent"] = anthropicOAuthUserAgent();
+          continue;
+        }
+        response = new Response(errText, { status: response.status, statusText: response.statusText, headers: response.headers });
+      }
       // Act-first forcing is best-effort: if THIS endpoint rejects tool_choice
       // (Anthropic disallows it with extended thinking; a compat layer may not
       // support it at all), strip it and retry once instead of failing the turn.
@@ -213,17 +231,26 @@ export class AnthropicProvider implements Provider {
       }
       // Tactical thinking-skip is best-effort too: if the endpoint 400s when a
       // routine round omitted the thinking pass (e.g. it insists thinking stay
-      // enabled once history carries thinking blocks), re-enable and retry once.
+      // enabled once history carries thinking blocks), re-enable and retry
+      // ONCE. Unguarded, it undid the passback cure below on every lap: the
+      // cure dropped `thinking`, this branch put it back, and the turn died
+      // on "content[].thinking must be passed back" (8x on DeepSeek).
       if (
         !response.ok &&
         response.status === 400 &&
         this.dialect === "deepseek" &&
+        !tacticalRetried &&
+        !passbackRetried &&
         body.thinking === undefined &&
         reasoningEnabled(req.reasoningLevel)
       ) {
-        void response.text().catch(() => "");
-        body.thinking = { type: "enabled" };
-        continue;
+        const errText = await response.text().catch(() => "");
+        if (!/passed back/i.test(errText)) {
+          tacticalRetried = true;
+          body.thinking = { type: "enabled" };
+          continue;
+        }
+        response = new Response(errText, { status: response.status, statusText: response.statusText, headers: response.headers });
       }
       // Cross-provider/model thinking blocks carry signatures Anthropic can't
       // validate ("Invalid `signature` in `thinking` block") — this happens
@@ -272,6 +299,13 @@ export class AnthropicProvider implements Provider {
             }
           }
           delete body.thinking;
+          // On DeepSeek an ABSENT field is the model's default, not "off", so
+          // the stripped history could go back in thinking mode and 400 the
+          // same way. Say off explicitly (the "off" dial's own wire).
+          if (this.dialect === "deepseek") {
+            body.thinking = { type: "disabled" };
+            delete body.output_config;
+          }
           continue;
         }
         if (/signature/i.test(errText) && /thinking/i.test(errText)) {
@@ -927,7 +961,7 @@ export async function fetchAnthropicModels(
     if (!token) return [];
     headers["Authorization"] = `Bearer ${token}`;
     headers["anthropic-beta"] = ANTHROPIC_OAUTH_BETA;
-    headers["User-Agent"] = ANTHROPIC_OAUTH_USER_AGENT;
+    headers["User-Agent"] = anthropicOAuthUserAgent();
     headers["x-app"] = ANTHROPIC_OAUTH_X_APP;
   } else {
     return [];

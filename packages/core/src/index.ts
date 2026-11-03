@@ -95,6 +95,11 @@ export {
   loadAnthropicTokens,
   clearAnthropicTokens,
   resolveAnthropicAccessToken,
+  anthropicClientVersion,
+  anthropicOAuthUserAgent,
+  raiseAnthropicClientVersion,
+  requiredClientVersionFromError,
+  resetAnthropicClientVersionCache,
   type AnthropicOAuthTokens,
   type AnthropicAuthChallenge,
 } from "./providers/anthropicAuth.js";

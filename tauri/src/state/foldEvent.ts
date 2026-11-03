@@ -704,9 +704,9 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
       // "Pinned provider … failed" and "stayed overloaded" were missing here,
       // so a pinned DeepSeek chat whose turn died showed NOTHING — the owner
       // sent "Continue" four times into silence (field log 2026-10-25).
-      const visible = /^(?:Provider failed|Pinned provider|Pinned \S+ failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down|Memory and workspace context took over|Can't reach the model's server|The \S+ API key was rejected)|stayed overloaded through every retry|is overloaded upstream|retrying with a smaller recent-history window/i.test(text);
+      const visible = /^(?:Provider failed|Pinned provider|Pinned \S+ failed|All configured providers failed|Your Ares account couldn't run|Image attached|Garrison is down|Memory and workspace context took over|Can't reach the model's server|The \S+ API key was rejected|No brain could answer|[A-Z][\w ]{1,24} says (?:your|the) )|stayed overloaded through every retry|is overloaded upstream|retrying with a smaller recent-history window/i.test(text);
       if (!visible) break;
-      const tone = /failed|couldn't run|down/i.test(text) ? "warn" : "dim";
+      const tone = /failed|couldn't run|down|No brain could answer| says (?:your|the) /i.test(text) ? "warn" : "dim";
       items.push({ kind: "notice", key: nextKey(), text: compact(text, 400), tone });
       break;
     }
@@ -857,7 +857,11 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
             text: handback.text,
             ...(handback.images?.length ? { images: [...handback.images] } : {}),
           }];
-          items.push({ kind: "notice", key: nextKey(), text: handback.notice, tone: "warn" });
+          // The daemon's "No brain could answer" line already says the message is
+          // back in the draft; a second notice would repeat it.
+          const lastUserAt = items.reduce((found, it, i) => (it.kind === "user" ? i : found), -1);
+          const alreadySaid = items.slice(lastUserAt + 1).some((it) => it.kind === "notice" && /^No brain could answer/.test(it.text));
+          if (!alreadySaid) items.push({ kind: "notice", key: nextKey(), text: handback.notice, tone: "warn" });
         }
       }
       break;

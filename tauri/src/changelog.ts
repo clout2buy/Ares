@@ -40,6 +40,25 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.68.0",
+    date: "November 2026",
+    title: "Know what it's doing",
+    tagline: "Ares tells you what it's doing while it works, never leaves a message without a reply, and stays sharp deep into long jobs.",
+    highlights: [
+      { icon: "💬", title: "See what it's doing", blurb: "While Ares works, the chat says it in plain words: \"Read parkour.html ✓, now running the tests\". If nothing happens for a minute it tells you what it's still on, and each agent in the list shows its current job.", tag: "New" },
+      { icon: "🧠", title: "Sharp in long jobs", blurb: "Ares used to tidy its memory of a chat at half capacity and forget the files it was editing. It now waits until it's actually full and keeps what it's working on, so long coding sessions stay as good as the start. Screenshots no longer make it re-send the whole chat every step, so long jobs use far less of your plan.", tag: "Faster" },
+      { icon: "✅", title: "Every message gets a reply", blurb: "If your plan's usage runs out or a provider says no, Ares switches to a backup and tells you in one line, instead of leaving your message with no answer.", tag: "Fixed" },
+      { icon: "✋", title: "Hands paused, clearly", blurb: "When Ares's hands are paused you see a card with when and why, and a Resume button. It could get stuck paused for weeks without showing it.", tag: "Fixed" },
+      { icon: "📋", title: "Ares asks first", blurb: "Jobs and goals Ares sets up for itself now wait in \"Ares wanted to\" (Forge, Background) until you say once, always, or no. Anything you ask for runs right away.", tag: "Safer" },
+      { icon: "📌", title: "Rules that stick", blurb: "Rules you give an agent now reach it on your phone and Telegram too, group chats know which room they're in, and memory keeps short facts instead of copying the same quote six times.", tag: "Fixed" },
+      { icon: "🌅", title: "What keeps breaking", blurb: "The morning briefing lists the top three things that went wrong lately with a suggested fix, and only nudges you once a week to connect calendar, weather or mail.", tag: "New" },
+      { icon: "🪟", title: "The Forge opens properly", blurb: "Any page on your computer, any port, opens right in the Forge. The panel no longer starts as a thin sliver, and a wide Forge no longer squeezes the chat.", tag: "Fixed" },
+      { icon: "⚡", title: "Fewer failed commands", blurb: "Commands written for other shells now run in Windows PowerShell, errors come back readable, and a helper that finishes without an answer explains what happened.", tag: "Fixed" },
+      { icon: "🧹", title: "Less clutter", blurb: "Empty chats stop piling up, old checkpoints are trimmed when the disk gets full, and Ares offers to clear out its old pre-August data with one click.", tag: "Polished" },
+      { icon: "🛡️", title: "Pages stay in the Forge", blurb: "Ares can no longer start a hidden browser from a script; it shows pages only in its own Forge. The permission card matches the light look and no longer pulses.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.67.1",
     date: "October 2026",
     title: "Nothing left running",

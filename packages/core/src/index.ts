@@ -70,6 +70,7 @@ export { modelLikelyHasVision } from "./modelVision.js";
 
 export {
   runForkedTurn,
+  SUBAGENT_ANSWER_NUDGE,
   type ForkedTurnOptions,
   type ForkedTurnResult,
   type ForkedTurnSeed,
@@ -159,6 +160,7 @@ export {
 export {
   SubagentRegistry,
   AresSubagentRunner,
+  silentChildAccount,
   BUILT_IN_SUBAGENT_TYPES,
   SUBAGENT_SESSION_TRANSITION_TOOLS,
   scopeSubagentTools,

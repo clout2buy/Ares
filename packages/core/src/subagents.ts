@@ -17,7 +17,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Usage, WorkStatus } from "@ares/protocol";
-import { runForkedTurn, type ForkedTurnResult } from "./forkedTurn.js";
+import { answerNudgeEnabled, nudgeSilentChild, runForkedTurn, SUBAGENT_ANSWER_NUDGE, type ForkedTurnResult } from "./forkedTurn.js";
 import type { EngineTool, Provider, QueryEngineConfig } from "./queryEngine.js";
 import { SubagentJournal, renderSubagentHandoff, type SubagentHandoff } from "./subagentJournal.js";
 import { loadSessionSnapshot } from "./session.js";
@@ -597,6 +597,7 @@ export class AresSubagentRunner implements SubagentRunner {
             : undefined,
           seed: { kind: "work-item", text: req.prompt },
           onEvent,
+          answerNudge: true,
         }));
     } catch (error) {
       // The board never shows a ghost agent: a thrown run settles as failed.
@@ -612,18 +613,11 @@ export class AresSubagentRunner implements SubagentRunner {
     const status: SubagentRunResult["status"] = isCompletedTurnStatus(result.status) ? "completed" : "failed";
     emitBoard({ event: "done", status });
 
-    const hasAssistant = result.history.some((m) => m.role === "assistant");
-    // A child that died before writing prose still owes the parent an
-    // explanation — surface its last tool errors instead of the bare
-    // "(subagent produced no text output)" that made fleet deaths undebuggable.
-    const lastToolErrors = events
-      .filter((e) => e.type === "tool_error")
-      .slice(-3)
-      .map((e) => `- ${String((e as { error?: unknown }).error ?? "").slice(0, 300)}`);
-    const emptyText =
-      (hasAssistant ? "(subagent produced no text output)" : "(subagent did not respond)") +
-      (lastToolErrors.length ? `\nLast tool error(s):\n${lastToolErrors.join("\n")}` : "");
-    const finalText = result.finalText || emptyText;
+    // A child that ended without prose (even after the answer nudge) still owes
+    // the parent an account: what it was doing and how it failed, instead of
+    // the bare "(subagent produced no text output)" that made 16 of 26 field
+    // failures undebuggable.
+    const finalText = result.finalText || silentChildAccount(events, result.status, toolCallCount);
 
     // Structured handoff: what the child actually DID (from engine events), fed
     // back alongside its prose so the parent doesn't have to trust the claims.
@@ -905,6 +899,18 @@ export class AresSubagentRunner implements SubagentRunner {
             .join("\n")
             .trim()
         : "";
+      if (!finalText && events.length > 0 && answerNudgeEnabled() && !input.signal?.aborted && status !== "interrupted") {
+        const nudged = await nudgeSilentChild(
+          { engine: session.engine, events, streamedText, usage, status, workStatus },
+          () => session.sendContent(
+            [{ type: "text", text: SUBAGENT_ANSWER_NUDGE }],
+            { inputId: `task_nudge_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}` },
+          ),
+          () => session.history(),
+          input.onEvent,
+        );
+        return { engine: session.engine, ...nudged };
+      }
       return {
         engine: session.engine,
         events,
@@ -1054,6 +1060,41 @@ function backgroundCompletion(
       content: [{ type: "text", text }],
     },
   };
+}
+
+/**
+ * The parent-facing account of a child that never wrote an answer: its last
+ * steps (activity + outcome, errors quoted) and the last engine error, so the
+ * parent can retry differently, take over, or tell the owner what broke.
+ */
+export function silentChildAccount(
+  events: readonly import("@ares/protocol").TurnEvent[],
+  status: ForkedTurnResult["status"],
+  toolCallCount: number,
+): string {
+  const outcome = new Map<string, string>();
+  for (const e of events) {
+    if (e.type === "tool_end") outcome.set(e.id, "ok");
+    else if (e.type === "tool_error") outcome.set(e.id, `FAILED: ${oneLine(e.error, 300)}`);
+  }
+  const steps = events
+    .filter((e): e is Extract<import("@ares/protocol").TurnEvent, { type: "tool_start" }> => e.type === "tool_start")
+    .slice(-5)
+    .map((e) => `- ${e.name}: ${oneLine(e.activityDescription || "", 120)} -> ${outcome.get(e.id) ?? "did not finish"}`);
+  const lastError = [...events].reverse().find((e) => e.type === "error") as { error?: { message?: unknown } } | undefined;
+  const lines = [
+    `(subagent ended without writing an answer; turn status: ${status}; ${toolCallCount} tool call${toolCallCount === 1 ? "" : "s"})`,
+  ];
+  if (steps.length) lines.push("What it was doing (last steps):", ...steps);
+  else lines.push("It made no tool calls and wrote nothing.");
+  if (lastError) lines.push(`Last engine error: ${oneLine(String(lastError.error?.message ?? ""), 300)}`);
+  lines.push("Its work is unreported: check the steps above before relying on it, or run it again with a narrower task.");
+  return lines.join("\n");
+}
+
+function oneLine(text: string, max: number): string {
+  const flat = String(text).replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat;
 }
 
 /** A completed loop, with or without behavioral proof. `needs_verification`

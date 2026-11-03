@@ -92,6 +92,7 @@ import {
   setTurnTokenWarn,
 } from "./state/session";
 import { foldEvent, toolKind, summarizeSteps } from "./state/foldEvent";
+import { activityView, formatElapsed, jobLine } from "./activityLine";
 import { daemonHealth, loopStuckNote, turnStatusNote, type Pong } from "./state/health";
 import {
   claimSteersForDaemonReady,
@@ -4603,7 +4604,14 @@ function App() {
       const latest = theirs.find((s) => s.items.length > 0) ?? theirs[0];
       return {
         agent: a,
-        preview: a && theirs.every((s) => s.items.length === 0) ? (a.instructions.trim() ? a.instructions.trim().slice(0, 70) : "No chats yet") : previewOf(latest),
+        // Working: its job line, what it is doing right now ("Running the
+        // tests"). Idle: the last word of its latest chat, like iMessage.
+        preview: (() => {
+          const working = theirs.find((s) => s.busy);
+          const job = working ? jobLine(working.activitySteps, true) : undefined;
+          if (job) return job;
+          return a && theirs.every((s) => s.items.length === 0) ? (a.instructions.trim() ? a.instructions.trim().slice(0, 70) : "No chats yet") : previewOf(latest);
+        })(),
         busy: theirs.some((s) => s.busy),
         unread: agentUnread.includes(id),
         chats: theirs.filter((s) => s.items.length > 0 || s.title !== "New session").length,
@@ -5726,11 +5734,31 @@ function App() {
                 <span className="turnMark imsgFace"><AgentAvatar agent={activeAgent} size={30} busy /></span>
                 <div className="typingBubble"><i /><i /><i /></div>
                 {(() => {
-                  // What it's doing and for how long: a long think (Opus can go
-                  // minutes before its first word) must never look frozen.
-                  const doing = active.activity && !/^(working|response committed|settling proposed actions|generating)$/i.test(active.activity) ? active.activity : workingElapsedS >= 6 ? "thinking" : null;
-                  const took = workingElapsedS >= 6 ? (workingElapsedS >= 60 ? `${Math.floor(workingElapsedS / 60)}m ${workingElapsedS % 60}s` : `${workingElapsedS}s`) : null;
-                  return doing || took ? <span className="typingNow">{[doing, took].filter(Boolean).join(" · ")}</span> : null;
+                  // What it's doing, in plain words, with what it just finished
+                  // above it: "Read parkour.html ✓ / Now running the tests".
+                  // Never a tool name, never a vague "stuck" (owner, 2026-10-20).
+                  const view = activityView(active.activitySteps, workingNow, active.lastEventAt);
+                  if (!view.lines.length) {
+                    const took = workingElapsedS >= 6 ? formatElapsed(workingElapsedS * 1000) : null;
+                    return took ? <span className="typingNow">{`Thinking · ${took}`}</span> : null;
+                  }
+                  return (
+                    <div className="activityLines" aria-live="polite">
+                      {view.lines.map((line) => (
+                        <span key={line.key} className="activityLine" data-done={line.done ? "1" : "0"} data-failed={line.failed ? "1" : "0"}>
+                          {line.text}
+                          {line.done ? <span className="activityCheck" aria-label="done">{line.failed ? " ·" : " ✓"}</span> : null}
+                          {line.elapsed ? <span className="activityElapsed"> · {line.elapsed}</span> : null}
+                        </span>
+                      ))}
+                      {view.stuck ? (
+                        <span className="activityStuck">
+                          Nothing new for a while. Long jobs can be quiet;{" "}
+                          <button type="button" className="activityStop" onClick={() => stopTurn()}>Stop</button>{" "}is here if you want it.
+                        </span>
+                      ) : null}
+                    </div>
+                  );
                 })()}
               </div>
             ) : null}

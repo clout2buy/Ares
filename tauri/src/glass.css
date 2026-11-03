@@ -190,6 +190,8 @@
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .roomRowTop strong { color: var(--text-hi); font: 600 15px/1.25 var(--display); letter-spacing: -0.01em; }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowPreview,
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .roomRowPreview { color: var(--muted); }
+/* the job line: what a working agent is doing right now, in its accent */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowPreview[data-job="1"] { color: color-mix(in srgb, var(--accent) 78%, var(--text-hi)); }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop em,
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .agentRowTop time { color: var(--faint); }
 /* a real portrait reads as glass-set: white ring, soft drop */

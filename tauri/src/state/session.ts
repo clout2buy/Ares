@@ -2,6 +2,7 @@
 // counter, and the session builders (extracted from App.tsx).
 
 import { compact, stringify, splitDataImages } from "../lib/format";
+import type { ActivityStep } from "../activityLine";
 
 // ─── View model ────────────────────────────────────────────────────────────
 
@@ -201,6 +202,10 @@ export interface SessionVm {
   activityAt?: number;
   /** When the last daemon event of any kind reached this session. */
   lastEventAt?: number;
+  /** This turn's plain-English steps ("Read parkour.html" done, "Running the
+   *  tests" now): the typing bubble's activity line and the agent list's job
+   *  line. Folded by foldActivity (activityLine.ts); gone when the turn is. */
+  activitySteps?: ActivityStep[];
   /** Between turn_start and the first provider attempt: gathering context. */
   preparing?: boolean;
   /** This turn's fresh tokens so far (new input + output across model calls). */

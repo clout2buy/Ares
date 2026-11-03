@@ -40,6 +40,16 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.68.2",
+    date: "November 2026",
+    title: "Quiet background jobs",
+    tagline: "Long background jobs finish with one tidy line instead of a wall of progress bars.",
+    highlights: [
+      { icon: "🧹", title: "Tidy job notices", blurb: "When a background command finishes, the chat shows one small line you can open for the output, not a big bubble full of progress bars that looked like you wrote it.", tag: "Polished" },
+      { icon: "💬", title: "No silent replies", blurb: "If a model sends back an empty reply, the chat now says so in one line and tells you how to get an answer.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.68.1",
     date: "November 2026",
     title: "Know what it's doing",

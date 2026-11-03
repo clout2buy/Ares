@@ -19,7 +19,8 @@ import {
   shellWatchdogFor,
 } from "./_shared.js";
 import { ownLeftovers, runShell } from "./Bash.js";
-import { powerShellDialect, powerShellErrorLocation, shellFlavorOf } from "./shellHints.js";
+import { powerShellDialect, powerShellErrorLocation, powerShellParseMessage, shellFlavorOf } from "./shellHints.js";
+import { rewritePowerShellChains } from "./psChain.js";
 
 const inputSchema = shellInputSchema("PowerShell command line.");
 
@@ -105,11 +106,13 @@ export const PowerShellTool = buildTool({
     const refusal = irrecoverableShellRefusal(i.command);
     if (refusal) throw new Error(refusal);
     const cwd = await resolveWorkspacePath(ctx, i.cwd, "cwd", "execute");
-    const pwsh = (await which("pwsh")) ?? (await which("powershell"));
+    const pwsh = await findPowerShell();
     if (!pwsh) throw new Error("Neither pwsh nor powershell found on PATH");
+    const chain = chainRewriteFor(pwsh, i.command);
+    const script = chain.command;
     const captureDir = path.join(ctx.workspace, ".ares", "shell-output", ctx.sessionId);
     const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    const invocation = powerShellInvocation(i.command, path.join(captureDir, `${runId}.ps1`));
+    const invocation = powerShellInvocation(script, path.join(captureDir, `${runId}.ps1`));
     if (invocation.script) {
       await fs.mkdir(captureDir, { recursive: true });
       await fs.writeFile(invocation.script.path, invocation.script.content, "utf8");
@@ -158,7 +161,12 @@ export const PowerShellTool = buildTool({
     // has to guess the dialect from an error it may not recognise.
     const dialect = powerShellDialect(shellFlavorOf(pwsh)) ?? "PowerShell (unknown version)";
     const rules = await shellInstructionsAfterRun(ctx, i.command, i.cwd, i.target_paths);
-    const output: unknown = { ...result, dialect, ...(rules ? { repositoryInstructions: rules } : {}) };
+    const output: unknown = {
+      ...result,
+      dialect,
+      ...(chain.changed ? { chainRewrite: `&& / || were rewritten for Windows PowerShell 5.1; ran: ${script.length > 400 ? `${script.slice(0, 397)}...` : script}` } : {}),
+      ...(rules ? { repositoryInstructions: rules } : {}),
+    };
     // A non-zero exit with NOTHING on either stream leaves the model blind —
     // the forensics pass found 25 of 57 failing shell calls in the owner's
     // sessions were exactly this (verify.ps1, `… | Select-Object -Last N`,
@@ -168,10 +176,13 @@ export const PowerShellTool = buildTool({
     const silentHint = silent
       ? "the command exited non-zero and printed NOTHING on either stream. Usual causes: a parse error or unknown cmdlet (PowerShell 5.1 rejects `&&`, `??`, ternaries), a pipe like `| Select-Object -Last N` that dropped the error, or a script that calls `exit 1` itself. Re-run WITHOUT the trailing pipe and wrapped as `$ErrorActionPreference='Continue'; try { <command> } catch { $_ | Out-String }` so the failure is visible before you change any code."
       : "";
-    const location = result.exitCode !== 0 || result.timedOut
-      ? powerShellErrorLocation(i.command, `${streams.stderr ?? ""}\n${streams.stdout ?? ""}`)
-      : null;
-    const hints = [location, result.hint, silentHint].filter(Boolean);
+    const combined = `${streams.stderr ?? ""}\n${streams.stdout ?? ""}`;
+    const failed = result.exitCode !== 0 || result.timedOut;
+    // Positions are reported in the script PowerShell actually ran (the chain
+    // rewrite keeps line numbers, so this is also the model's own line).
+    const location = failed ? powerShellErrorLocation(script, combined) : null;
+    const parse = failed ? powerShellParseMessage(combined) : null;
+    const hints = [parse ? `PowerShell refused to parse the command: ${parse}` : null, location, result.hint, silentHint].filter(Boolean);
     const hintLine = hints.length > 0 ? `\nhint: ${hints.join(" ")}` : "";
     const failure = result.timedOut
       ? `PowerShell timed out after ${i.timeout}ms${hintLine}`
@@ -191,6 +202,37 @@ export const PowerShellTool = buildTool({
     };
   },
 });
+
+/**
+ * Prefer PowerShell 7 (pwsh accepts `&&`, `??`, ternaries): on PATH, or in its
+ * standard install folder, which an MSI/winget install does not always put on
+ * the PATH a desktop app inherits. Then fall back to Windows PowerShell.
+ */
+async function findPowerShell(): Promise<string | null> {
+  const onPath = await which("pwsh");
+  if (onPath) return onPath;
+  if (process.platform === "win32") {
+    for (const root of [process.env.ProgramFiles, process.env.ProgramW6432]) {
+      if (!root) continue;
+      const candidate = path.join(root, "PowerShell", "7", "pwsh.exe");
+      try {
+        await fs.access(candidate);
+        return candidate;
+      } catch {
+        // not installed there
+      }
+    }
+  }
+  return which("powershell");
+}
+
+/** On Windows PowerShell 5.1, bash-style `&&`/`||` chains become 5.1
+ *  statements (psChain.ts); pwsh 7 runs them natively and is left alone.
+ *  ARES_PS_CHAIN_REWRITE=0 turns the rewrite off. */
+export function chainRewriteFor(program: string, command: string): { command: string; changed: boolean } {
+  if (shellFlavorOf(program) !== "powershell" || process.env.ARES_PS_CHAIN_REWRITE === "0") return { command, changed: false };
+  return rewritePowerShellChains(command);
+}
 
 async function which(bin: string): Promise<string | null> {
   const paths = (process.env.PATH ?? "").split(path.delimiter);

@@ -119,6 +119,64 @@ export function classifyShellFailure(
 }
 
 /**
+ * Windows PowerShell 5.1 started with -EncodedCommand (how every multi-line or
+ * `"`-bearing command has gone since October) writes its error stream as
+ * CLIXML: `#< CLIXML <Objs><S S="Error">At line:2 char:9_x000D__x000A_</S>...`.
+ * The model got that XML soup instead of the error, and the hint table missed
+ * it (`&&` arrives as `&amp;&amp;`). Decode it back to plain text; progress
+ * records are dropped. Text without the marker is returned unchanged.
+ */
+export function decodeClixml(text: string): string {
+  const marker = "#< CLIXML";
+  const at = text.indexOf(marker);
+  if (at < 0) return text;
+  const before = text.slice(0, at);
+  const xml = text.slice(at + marker.length);
+  const end = xml.lastIndexOf("</Objs>");
+  const after = end >= 0 ? xml.slice(end + "</Objs>".length).replace(/^\r?\n/, "") : "";
+  const parts: string[] = [];
+  const re = /<S S="([^"]*)">([\s\S]*?)<\/S>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(end >= 0 ? xml.slice(0, end) : xml)) !== null) {
+    if (/^progress$/i.test(m[1])) continue;
+    parts.push(
+      m[2]
+        .replace(/_x([0-9A-Fa-f]{4})_/g, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, "&"),
+    );
+  }
+  return `${before}${parts.join("").replace(/\s+$/, "")}${after ? `\n${after}` : ""}`;
+}
+
+/**
+ * The parser's own sentence when PowerShell refused to parse the command
+ * (ParserError / ParseException), e.g. "The token '&&' is not a valid statement
+ * separator in this version." Null for runtime errors. The record looks like:
+ *   At line:1 char:8
+ *   + echo a && echo b
+ *   +        ~~
+ *   The token '&&' is not a valid statement separator in this version.
+ *       + CategoryInfo          : ParserError: ...
+ */
+export function powerShellParseMessage(output: string): string | null {
+  if (!/ParserError|ParseException/i.test(output)) return null;
+  const lines = output.split(/\r?\n/);
+  for (let k = 0; k < lines.length; k++) {
+    if (!/^At line:\d+ char:\d+/i.test(lines[k].trim())) continue;
+    for (let j = k + 1; j < lines.length; j++) {
+      const text = lines[j].trim();
+      if (!text || text.startsWith("+")) continue;
+      return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+    }
+  }
+  return null;
+}
+
+/**
  * PowerShell reports where a parse or runtime error happened as
  * `At line:N char:M`, numbered within the script it was given. The model sees
  * that number with no script in front of it, so it re-reads its own call and

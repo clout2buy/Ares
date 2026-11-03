@@ -52,7 +52,7 @@ test("a served page carries the driver; commands reach the open copy and its ans
   await br.press("w", { holdMs: 50 });
   await assert.rejects(() => br.clickByText("Start"), /no clickText here/, "a page-side failure comes back as the error");
   assert.deepEqual(seen, ["state", "press", "clickText"]);
-  await assert.rejects(() => br.navigate("https://example.com/"), /outside the served folder/);
+  await assert.rejects(() => br.navigate("https://example.com/"), /is a website, not this local page: open it with Browser/);
 
   await assert.rejects(() => drivePage(served.root, "gone", "state"), /no longer open/);
   running = false;

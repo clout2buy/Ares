@@ -1001,7 +1001,7 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // Workspaces: the owner's VPS boxes for agents (daemon/workspaces.ts).
     "workspaces_list", "workspace_add", "workspace_test", "workspace_setup", "workspace_remove",
     // Scheduled agent jobs (daemon/jobs.ts), cross-owner sharing (daemon/sharing.ts), the room kill switch.
-    "jobs_list", "job_add", "job_change", "agents_sharing", "agents_sharing_set", "share_accept", "share_reject", "room_stop",
+    "jobs_list", "job_add", "job_change", "mandates_list", "mandate_decide", "mandate_revoke", "proactive_mode_set", "agents_sharing", "agents_sharing_set", "share_accept", "share_reject", "room_stop",
 ];
 
 #[tauri::command]

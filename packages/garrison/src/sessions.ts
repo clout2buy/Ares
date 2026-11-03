@@ -311,6 +311,10 @@ interface LiveSession {
   createdAt: string;
   surface?: SessionSurface;
   tenant?: SessionTenant;
+  /** No meta.json yet: the session has no message. The record is written on
+   *  the first send, never before — 613 of 739 registry entries (Sep 20 to
+   *  Nov 2) were sessions nobody ever typed into. */
+  metaDeferred?: boolean;
   busy: boolean;
   /** Canonical sessions may have several admitted callers while exactly one
    * runner owns provider/tool execution. busy remains true until all settle. */
@@ -462,6 +466,7 @@ export class SessionManager {
     if (personaId && !brain) throw new Error(`unknown persona: ${personaId}`);
     const session = this.spawn({
       id: `sess_${randomUUID()}`,
+      deferMeta: true,
       ...rest,
       provider: rest.provider ?? brain?.provider,
       model: rest.model ?? brain?.model,
@@ -499,6 +504,9 @@ export class SessionManager {
     if (session) await session.ioChain.catch(() => undefined);
     const file = metaPath(this.home, sessionId);
     const meta = await readMetaFile(file);
+    // A session nobody ever typed into has no registry entry to mark; writing
+    // an archived one would create the very record lazy creation avoids.
+    if (!meta && session?.metaDeferred) return true;
     if (meta || known) {
       await fs.mkdir(sessionsDir(this.home), { recursive: true }).catch(() => undefined);
       await fs.writeFile(file, JSON.stringify({ ...(meta ?? { id: sessionId }), archived: true }, null, 2) + "\n", "utf8").catch(() => undefined);
@@ -610,6 +618,11 @@ export class SessionManager {
     session.turnStartedAt ??= this.now();
     session.busy = true;
     this.lastSend = this.now();
+    if (session.metaDeferred) {
+      // First message: NOW the session is worth a registry entry.
+      session.metaDeferred = false;
+      this.queueMetaWrite(session);
+    }
     if (!session.titled) {
       session.title = deriveTitle(text);
       session.titled = true;
@@ -967,6 +980,7 @@ export class SessionManager {
           titled: p.title !== FALLBACK_TITLE,
           messages: p.messages,
           eventCount: p.eventCount,
+          deferMeta: p.messages.length === 0 && p.eventCount === 0,
         });
       } catch (error) {
         if (p.canonical) throw error;
@@ -1023,6 +1037,7 @@ export class SessionManager {
           titled: restored.title !== FALLBACK_TITLE,
           messages: restored.messages,
           eventCount: restored.eventCount,
+          deferMeta: restored.messages.length === 0 && restored.eventCount === 0,
         });
       } catch (error) {
         if (restored.canonical) throw error;
@@ -1047,6 +1062,8 @@ export class SessionManager {
     messages?: readonly Message[];
     eventCount?: number;
     personaId?: string;
+    /** No content yet: hold the meta.json until the first send. */
+    deferMeta?: boolean;
   }): LiveSession {
     const controller = new AbortController();
     const made = this.factory({
@@ -1092,6 +1109,7 @@ export class SessionManager {
       createdAt: p.createdAt ?? new Date(this.now()).toISOString(),
       surface: p.surface,
       tenant: p.tenant,
+      ...(p.deferMeta ? { metaDeferred: true } : {}),
       busy: false,
       inFlightSends: 0,
       engine,
@@ -1227,6 +1245,7 @@ export class SessionManager {
   }
 
   private queueMetaWrite(session: LiveSession): void {
+    if (session.metaDeferred) return;
     const file = metaPath(this.home, session.id);
     const meta = {
       id: session.id,

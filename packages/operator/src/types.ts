@@ -66,6 +66,9 @@ export interface Goal {
   mode?: "plan" | "execute";
   /** The owner's recorded consent, when mode === "execute" came through a gate. */
   consent?: { approvalId: string; at: string; approver?: string };
+  /** Where an unasked goal came from (the standing order that materialized
+   *  it), so the mandate gate (mandates.ts) can ask who authorized THAT. */
+  origin?: { kind: "standing_order"; id: string; createdBy?: "owner" | "ares"; approved?: boolean; createdAt?: string };
   /** Sub-missions (reuses @ares/agent mission model). Empty in O1. */
   missionIds: string[];
   /** How reality is measured (O3). Absent → trust the Worker's claim (O1). */

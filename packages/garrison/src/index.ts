@@ -96,3 +96,12 @@ export {
 } from "./server.js";
 
 export { ApprovalQueue, type ApprovalQueueOptions, type ApprovalOutcome } from "./approvals.js";
+
+export {
+  EMPTY_SESSION_TITLE,
+  emptySessionMinAgeMs,
+  pruneEmptySessions,
+  prunedSessionsDir,
+  type PruneEmptySessionsOptions,
+  type PruneEmptySessionsReport,
+} from "./sessionPrune.js";

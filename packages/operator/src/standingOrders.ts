@@ -176,6 +176,13 @@ export async function materializeDueStandingOrders(home: string | undefined, now
         statement: order.statement,
         now,
       });
+      goal.origin = {
+        kind: "standing_order",
+        id: order.id,
+        ...(order.createdBy ? { createdBy: order.createdBy } : {}),
+        ...(typeof order.approved === "boolean" ? { approved: order.approved } : {}),
+        createdAt: order.createdAt,
+      };
       await saveGoal(resolvedHome, goal);
     }
     order.lastRunAt = now.toISOString();

@@ -22,6 +22,7 @@ import {
   type SessionKernelStore,
   type VerifierOptions,
 } from "@ares/core";
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -56,9 +57,9 @@ import { BrowserWatchHub, setBrowserWatchHub } from "../browserWatch.js";
 import { dim, notice } from "../terminalUi.js";
 import { loadUiSettings, updateUiSettings } from "../uiSettings.js";
 import { prepareAresAgent, runDeepDream, runHeartbeatTick } from "@ares/agent";
-import { QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
+import { MandateStore, operatorGoalGate, QueryEngineDispatcher, OperatorBackgroundLoop, isOperatorPaused, operatorTickIntervalMs, runCrucibleTrials, loadStandingOrders, materializeDueStandingOrders, loadWatchers, type StandingOrder } from "@ares/operator";
 import { MemoryStore, detectWorkspaceProjectId, loadProjectState, withConsolidationLock } from "@ares/mind";
-import { SessionManager, GarrisonServer, DeviceBridge, Scheduler, ApprovalQueue, tokenPath, loadGarrisonRollout, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
+import { pruneEmptySessions, SessionManager, GarrisonServer, DeviceBridge, Scheduler, ApprovalQueue, tokenPath, loadGarrisonRollout, DEFAULT_GARRISON_PORT, type GatewayServerFrame } from "@ares/garrison";
 import { buildHolotableHtml, MECH_SPEC, ROBOT_ARM_SPEC, type HoloSpec } from "../holotable.js";
 import { runEffect } from "@ares/effects";
 import { gateToolPermission, remoteAutonomyDecision } from "../policyGate.js";
@@ -518,6 +519,26 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     },
   });
   personaRuntime.attach(sessions);
+  // Startup housekeeping: move registry entries for sessions nobody ever typed
+  // into (no transcript, no messages, older than a day) out of the registry
+  // before rehydrating it. Idempotent; never touches a session with content.
+  try {
+    const pruned = await pruneEmptySessions({
+      home: context.home,
+      hasContent: (id, meta) => {
+        const ws = typeof meta.workspace === "string" ? meta.workspace : "";
+        // Another workspace's kernel is not open here: can't prove it empty, keep it.
+        if (ws && path.resolve(ws) !== path.resolve(context.workspace) && existsSync(path.join(ws, ".ares", "session-kernel.sqlite"))) return true;
+        if (!sessionKernel.getSession(id)) return false;
+        return sessionKernel.listMessages(id).length > 0 || sessionKernel.countEvents(id) > 0;
+      },
+    });
+    if (pruned.pruned.length > 0) {
+      process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "sessions_pruned", count: pruned.pruned.length, movedTo: pruned.dir } }) + "\n");
+    }
+  } catch {
+    // housekeeping never blocks boot
+  }
   const restored = await sessions.rehydrate();
 
   // The phone's Today tab: the morning feed (a real turn on its own session),
@@ -735,6 +756,9 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
             void telegramReporter?.report(event).catch(() => {});
           },
           onError: () => {},
+          // Same mandate store as the desktop daemon (<home>/operator/mandates.json):
+          // an unasked goal with no mandate is recorded for the owner, not run.
+          gate: operatorGoalGate(new MandateStore({ home: context.home })),
         },
       );
 

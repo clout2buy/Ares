@@ -59,6 +59,13 @@ export interface OperatorBackgroundLoopOptions {
    * (the daemon today) every watcher trip stays plan-only.
    */
   requestExecution?: (request: WatcherExecutionRequest) => Promise<"allow_once" | "allow_always" | "deny">;
+  /**
+   * Mandate gate (mandates.ts `operatorGoalGate`): asked before EVERY goal
+   * tick, so a revoked mandate stops the next one. false = the tick is not
+   * run (the gate records what it would have done). Absent = no gate.
+   * A throwing gate counts as false: no answer is not a yes.
+   */
+  gate?: (goal: Goal, decision: AttentionDecision) => boolean | Promise<boolean>;
 }
 
 /**
@@ -176,7 +183,33 @@ export class OperatorBackgroundLoop {
       const selectedGoalId = decision.selected?.id.startsWith("goal:")
         ? decision.selected.id.slice("goal:".length)
         : undefined;
-      const goal = selectedGoalId ? goals.find((g) => g.id === selectedGoalId) : undefined;
+      let goal = selectedGoalId ? goals.find((g) => g.id === selectedGoalId) : undefined;
+
+      if (goal && this.opts.gate) {
+        // Ask the mandate gate in attention order and advance the first goal it
+        // allows. A goal it holds back is recorded by the gate, and must not
+        // starve every mandated goal ranked below it.
+        const ranked = [decision.selected, ...decision.queue]
+          .flatMap((item) => (item && item.id.startsWith("goal:") ? [item.id.slice("goal:".length)] : []));
+        const seen = new Set<string>();
+        let chosen: Goal | undefined;
+        const held: string[] = [];
+        for (const id of ranked) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const candidate = goals.find((g) => g.id === id);
+          if (!candidate) continue;
+          let allowed = false;
+          try { allowed = (await this.opts.gate(candidate, decision)) === true; } catch { allowed = false; }
+          if (allowed) { chosen = candidate; break; }
+          held.push(candidate.statement.slice(0, 80));
+        }
+        if (!chosen) {
+          this.emit({ type: "operator_idle", reason, summary: `observed, not run: ${held.join("; ").slice(0, 240)}`, suggestions: [] });
+          return { reason, decision, ran: [], events };
+        }
+        goal = chosen;
+      }
 
       if (!goal) {
         // Nothing urgent to advance — stay mission-aware: surface (don't run) the

@@ -37,6 +37,7 @@ import { createLiveExplain, settled as settledKitPage } from "./liveExplain";
 import { UpdateBanner } from "./UpdateBanner";
 import { PhonePairCard, type PhonePairState } from "./PhonePair";
 import { WhatsNew } from "./WhatsNew";
+import { WantedList, type MandatesVm } from "./WantedList";
 import { ForgeIntro } from "./ForgeIntro";
 import { LivingSurface } from "./LivingSurface";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle, useUiStyle } from "./newStyle";
@@ -764,6 +765,7 @@ function App() {
   const [workspaceError, setWorkspaceError] = useState<string | undefined>();
   const [jobs, setJobs] = useState<JobVm[]>([]);
   const [jobError, setJobError] = useState<string | undefined>();
+  const [mandatesView, setMandatesView] = useState<MandatesVm | null>(null);
   const [sharing, setSharing] = useState<SharingVm>({ settings: { give: false, take: false }, inbox: [] });
   const [shareError, setShareError] = useState<string | undefined>();
   const [profileView, setProfileView] = useState<{ username: string; user: DirectoryProfileVm | null; loading: boolean; error?: string } | null>(null);
@@ -2791,6 +2793,14 @@ function App() {
           setJobError(String((e as { error?: unknown }).error ?? "that didn't work"));
           return true;
         }
+        case "mandates_list": {
+          const ev = e as unknown as Partial<MandatesVm>;
+          setMandatesView({ modes: ev.modes ?? {}, wanted: Array.isArray(ev.wanted) ? ev.wanted : [], mandates: Array.isArray(ev.mandates) ? ev.mandates : [] });
+          return true;
+        }
+        case "mandate_error":
+          pushGatewayToast(`Couldn't do that: ${String((e as { error?: unknown }).error ?? "unknown error")}`);
+          return true;
         case "agent_sharing": {
           const ev = e as unknown as Partial<SharingVm>;
           if (ev.settings) setSharing({ settings: ev.settings, inbox: Array.isArray(ev.inbox) ? ev.inbox : [] });
@@ -6061,7 +6071,7 @@ function App() {
             <div className="forgeTabs" role="tablist">
               <button role="tab" data-on={forge.tab === "live" ? "1" : "0"} data-live={forge.tab !== "live" && liveTarget ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "live" }))}><PixelIcon name="live" size={10} palette={forge.tab === "live" ? "blue" : "dim"} />Live</button>
               <button role="tab" data-on={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "preview" }))}><PixelIcon name="artifacts" size={10} palette={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "blue" : "dim"} />Files</button>
-              <button role="tab" data-on={forge.tab === "background" ? "1" : "0"} onClick={() => { setForge((f) => ({ ...f, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); }}>Background</button>
+              <button role="tab" data-on={forge.tab === "background" ? "1" : "0"} onClick={() => { setForge((f) => ({ ...f, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); daemonCmd({ type: "mandates_list" }); }}>Background</button>
             </div>
             <span className="forgeSurfaceState" data-live={forge.tab === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"}>
               {forge.tab === "live" ? (embeddedActive ? "interactive canvas" : liveTarget ? "browser canvas" : "canvas ready") : forge.tab === "holo" ? "spatial artifact" : forge.artifact ? forge.artifact.label : "artifact canvas"}
@@ -6084,7 +6094,15 @@ function App() {
               onResume={() => active && daemonCmd({ type: "startup_recovery_resume", sessionId: active.id })}
               onDiscard={() => active && daemonCmd({ type: "startup_recovery_discard", sessionId: active.id })}
               onHalt={() => daemonCmd({ type: "operator_control", action: "halt" })}
-              onRefresh={() => { daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); }}
+              onRefresh={() => { daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); daemonCmd({ type: "mandates_list" }); }}
+              wanted={
+                <WantedList
+                  state={mandatesView}
+                  onDecide={(id, decision) => daemonCmd({ type: "mandate_decide", id, decision })}
+                  onMode={(source, mode) => daemonCmd({ type: "proactive_mode_set", source, mode })}
+                  onRevoke={(id) => daemonCmd({ type: "mandate_revoke", id })}
+                />
+              }
             />
           ) : null}
           {forge.tab === "preview" ? (
@@ -12250,7 +12268,9 @@ function ContextPopover({ promptTokens, windowTokens, usage, onRefresh, onClose,
 }
 
 /** What is running behind the chat, so a restart never hides a loop. */
-function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, onStop, onStopAll, onStopAgent, onResume, onDiscard, onHalt, onRefresh }: {
+function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, onStop, onStopAll, onStopAgent, onResume, onDiscard, onHalt, onRefresh, wanted }: {
+  /** The "Ares wanted to" list (WantedList.tsx), under the restart note. */
+  wanted?: React.ReactNode;
   jobs: BackgroundJobVm[];
   agents: SubagentJobWire[];
   opStatus: { activeCount?: number; halted?: boolean; running?: boolean } | null;
@@ -12287,6 +12307,7 @@ function ForgeBackgroundPanel({ jobs, agents, opStatus, recovery, recoveryMode, 
         </div>
       ) : null}
       <div className="bgNote">On restart Ares {recoveryMode.mode === "auto" ? "resumes unfinished work automatically" : recoveryMode.mode === "never" ? "discards unfinished work" : "asks before resuming unfinished work"}{recoveryMode.pinnedByEnv ? " (pinned by ARES_STARTUP_RECOVERY)" : ""}. Change it in Settings → Starting up.</div>
+      {wanted}
       {opStatus && (opStatus.activeCount || opStatus.running) ? (
         <div className="bgCard">
           <div className="bgCardBody"><strong>Operator loop</strong><span>{opStatus.activeCount ?? 0} active mission{(opStatus.activeCount ?? 0) === 1 ? "" : "s"}{opStatus.halted ? " · halted" : " · running unattended"}</span></div>

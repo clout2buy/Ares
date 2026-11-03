@@ -301,6 +301,13 @@ export {
   type ReliabilityTriageOptions,
   type ReliabilityTriagePaths,
 } from "./reliabilityTriage.js";
+export {
+  digestReliabilityFindings,
+  describeFinding,
+  formatDigestLine,
+  type ReliabilityDigestItem,
+  type ReliabilityDigestOptions,
+} from "./reliabilityDigest.js";
 
 export {
   HookManager,
@@ -386,6 +393,9 @@ export {
   diffWorkspaceCheckpointUnified,
   restoreWorkspaceCheckpoint,
   gcWorkspaceCheckpoints,
+  capWorkspaceCheckpoints,
+  checkpointCapBytes,
+  type CheckpointCapResult,
   isUnsnapshotableWorkspace,
   settleGitCheckpointAnchors,
   type CreateCheckpointOptions,

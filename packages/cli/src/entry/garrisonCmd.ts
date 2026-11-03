@@ -7,6 +7,7 @@ import {
   recordAudit,
   composeVerifiedChildSessionSync,
   gcWorkspaceCheckpoints,
+  capWorkspaceCheckpoints,
   installGlobalCrashHandlers,
   loadChildVerificationDebt,
   loadSessionRollout,
@@ -78,7 +79,8 @@ import { runScheduledGauntlet } from "./scheduledGauntlet.js";
 import { OwnerControlPlane, ownerControlledDispatcher } from "./ownerControlPlane.js";
 import { startLifeSurfaces } from "./lifeWiring.js";
 import { startGoalSurfaces } from "./goalsMemoryWiring.js";
-import { startBriefingsAndLocation, type PhoneBriefingsAndLocation } from "./briefingWiring.js";
+import { startBriefingsAndLocation, triageBreakingSource, type PhoneBriefingsAndLocation } from "./briefingWiring.js";
+import { LegacyHomeOffer } from "../legacyHome.js";
 import { startMaintainer, type MaintainerWiring } from "./maintainerWiring.js";
 import { configureSharedMarketplace } from "../marketplace/tool.js";
 import { startConnectorHealthMonitor } from "../connectorHealth.js";
@@ -618,25 +620,32 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
       gauntlet: async () =>
         (await runScheduledGauntlet({ suite: process.env.ARES_GAUNTLET_SUITE ?? "coding-v3", gate: true, trigger: "garrison", home: context.home })).nightly,
       // The morning paper: due once a day from ARES_FEED_HOUR (07:00 local).
-      feed: () => life.feed.maybeRunDaily(),
+      feed: async () => ((await life.feed.maybeRunDaily()) ? "started" : "idle"),
       // Goal check-ins: wakes the agent on each goal that is due, in its own thread.
       goals: () => goalSurfaces.tick(),
       // The phone's briefings: due at the owner's chosen times, in their zone.
-      briefing: () => phoneBriefing?.briefings.tick(),
+      briefing: async () => (await phoneBriefing?.briefings.tick()) ?? "idle",
       // Nightly self-improvement proposals (never deploys by itself; opt-in with ARES_MAINTAINER=1).
       maintainer: () => maintainerWiring?.tick() ?? "idle",
       // Marketplace watches: at most one due watch per tick; honours ARES_MARKETPLACE=0, the owner's pause and walls.
       marketplace: () => marketplace.tick(),
       // Box upkeep (ARES_HOUSEKEEPING=0 turns it off) + the nightly encrypted backup, opt-in with ARES_BACKUP=1.
-      housekeeping: () => systemSurfaces.tick(),
+      // Then the dead pre-"one vault" home, if any, becomes ONE owner card (removed only on his Approve).
+      housekeeping: async () => {
+        const result = await systemSurfaces.tick();
+        void legacyHomeOffer.check().catch(() => undefined);
+        return result;
+      },
     },
     lastActivityAt: () => sessions.lastActivityAt(),
     home: context.aresHome,
     activeTurns: () => sessions.list().filter((s) => s.busy).length,
     // The owner's pause holds system jobs; every run lands in the audit trail.
     isPaused: () => ownerPause.paused,
-    // An idle goals tick (every five minutes) is not an action worth a line.
-    onRun: (hook, result) => { if ((hook === "goals" || hook === "marketplace" || hook === "housekeeping") && result.startsWith("idle")) return; if (hook === "maintainer" && !/^(started|error|not started)/.test(result)) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
+    // An idle tick of ANY hook is not an action worth a line: the briefing check
+    // (every minute) and the feed check used to land 3,950 + 760 "ok" lines for
+    // 13 briefings and 14 editions.
+    onRun: (hook, result) => { if (result.startsWith("idle")) return; if (hook === "maintainer" && !/^(started|error|not started)/.test(result)) return; void appendAudit({ actor: "scheduler", action: `scheduler.${hook}`, result }, context.home); },
   });
   scheduler.subscribe((event) => {
     process.stdout.write(JSON.stringify({ type: "lifecycle", event: { ...event, source: "garrison" } }) + "\n");
@@ -859,11 +868,20 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
     connectors: connectorsSource(context.aresHome),
     ...(instancesBox ? { instances: instancesSource(instancesBox) } : {}),
     gcCheckpoints: gcWorkspaceCheckpoints,
+    capCheckpoints: (ws) => capWorkspaceCheckpoints(ws),
     kernel: sessionKernel,
     activeTurns: () => sessions.list().filter((s) => s.busy).length,
     log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "system", line } }) + "\n"),
   });
   systemSurfaces.start();
+  const legacyHomeOffer = new LegacyHomeOffer({
+    home: context.home,
+    activeHome: context.aresHome,
+    keep: [context.home, context.workspace],
+    approvals,
+    audit: (entry) => void appendAudit(entry, context.home),
+    log: (line) => process.stdout.write(JSON.stringify({ type: "lifecycle", event: { kind: "system", line } }) + "\n"),
+  });
   // Daily, jittered launch+handshake of the MCP servers the owner connected
   // (only those). Results: <home>/telemetry/connectors-health.json, read by
   // connectorHealth(id). Kill switch: ARES_CONNECTOR_HEALTH=0.
@@ -1005,6 +1023,8 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
   });
   const briefingWiring = startBriefingsAndLocation({
     maintenance: (since) => maintainerWiring!.maintainer.briefingFacts(since),
+    // "What keeps breaking": the ranked triage digest (the queue lives under aresHome, where triage writes it).
+    breaking: triageBreakingSource(context.aresHome),
     home: context.home,
     sessions,
     personas: personaRuntime,

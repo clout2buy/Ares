@@ -58,8 +58,25 @@ export const BRIEFING_KINDS = ["morning", "evening"] as const;
 export type BriefingKind = (typeof BRIEFING_KINDS)[number];
 
 /** Canonical display order: what needs the owner first, then the day, then the rest. */
-export const BRIEFING_SECTION_IDS = ["approvals", "calendar", "weather", "reminders", "mail", "goals", "agents", "maintenance"] as const;
+export const BRIEFING_SECTION_IDS = ["approvals", "calendar", "weather", "reminders", "mail", "goals", "agents", "breaking", "maintenance", "setup"] as const;
 export type BriefingSectionId = (typeof BRIEFING_SECTION_IDS)[number];
+
+/**
+ * Sections the garrison writes itself, never the model: "What keeps breaking"
+ * (the ranked triage digest, morning only) and the one "connect calendar,
+ * weather, mail" line. They are facts with a fixed shape; a model rewording
+ * them could only lose the count or the fix.
+ */
+const FIXED_SECTIONS: readonly BriefingSectionId[] = ["breaking", "setup"];
+
+/** Sources the OWNER connects. When they are not connected the card says so once, on one line. */
+const CONNECTABLE: readonly BriefingSectionId[] = ["calendar", "weather", "mail"];
+
+/** The connect line shows at most once per this many days (ARES_BRIEFING_CONNECT_HINT_DAYS, default 7). */
+function connectHintEveryMs(): number {
+  const n = Number(process.env.ARES_BRIEFING_CONNECT_HINT_DAYS);
+  return (Number.isFinite(n) && n >= 0 ? n : 7) * 86_400_000;
+}
 
 export interface BriefingSettings {
   /** Master switch. */
@@ -80,7 +97,7 @@ export const DEFAULT_BRIEFING_SETTINGS: BriefingSettings = {
   morning: { enabled: true, time: "07:30" },
   evening: { enabled: true, time: "18:30" },
   agentId: "ares",
-  sections: { approvals: true, calendar: true, weather: true, reminders: true, mail: true, goals: true, agents: true, maintenance: true },
+  sections: { approvals: true, calendar: true, weather: true, reminders: true, mail: true, goals: true, agents: true, breaking: true, maintenance: true, setup: true },
   push: true,
 };
 
@@ -188,6 +205,12 @@ export interface FactApproval {
   summary: string;
   kind?: string;
 }
+/** One "What keeps breaking" line: the triage digest (@ares/core reliabilityDigest), already ranked. */
+export interface FactBreaking {
+  what: string;
+  fix: string;
+  count: number;
+}
 
 export interface BriefingSources {
   weather?: () => Promise<string>;
@@ -199,6 +222,8 @@ export interface BriefingSources {
   approvals?: () => Promise<FactApproval[]>;
   /** What the nightly Maintainer did (maintainer/maintainer.ts). Absent = the section is skipped, not "missing". */
   maintenance?: (sinceMs: number) => Promise<MaintenanceFacts>;
+  /** The top recurring problems, ranked (morning only). Absent = the section is skipped, not "missing". */
+  breaking?: () => Promise<FactBreaking[]>;
 }
 
 export type SourceStatus = "ok" | MissingReason;
@@ -235,6 +260,8 @@ const SECTION_TITLES: Record<BriefingSectionId, (k: BriefingKind, window?: strin
   goals: () => "Goals",
   agents: (k) => (k === "morning" ? "While you were away" : "What your agents did"),
   maintenance: () => "Ares maintenance",
+  breaking: () => "What keeps breaking",
+  setup: () => "Connect",
 };
 
 // ─── Settings ─────────────────────────────────────────────────────────────
@@ -327,7 +354,30 @@ export interface RunLatch {
   status: "running" | "done" | "failed";
   cardId?: string;
 }
-export type BriefingState = { runs: Record<string, RunLatch> };
+export type BriefingState = {
+  runs: Record<string, RunLatch>;
+  /** Epoch ms the "connect calendar, weather, mail" line was last shown. */
+  connectHintAt?: number;
+};
+
+/**
+ * Until when the clock can skip reading anything at all. Outside every slot's
+ * catch-up window nothing can become due before the next slot opens, so the
+ * minute tick need not touch the disk until then; inside a window (a retry may
+ * come due any minute) it checks every tick. Field origin: the minute tick
+ * read two files and wrote an audit line every minute — 3,950 audit lines for
+ * 13 briefings, 814 of them on one day.
+ */
+export function quietUntil(settings: BriefingSettings, nowMs: number, timeZone: string, catchUpMinutes = CATCH_UP_MINUTES): number {
+  if (!settings.enabled) return nowMs + 15 * 60_000; // a re-enable through the API resets this; a hand edit is noticed within 15 minutes
+  const nowMin = minutesOfDay(nowMs, timeZone);
+  for (const kind of BRIEFING_KINDS) {
+    const at = parseClock(settings[kind].time);
+    if (settings[kind].enabled && at !== undefined && nowMin >= at && nowMin < at + catchUpMinutes) return nowMs;
+  }
+  const next = Object.values(nextRuns(settings, nowMs, timeZone)).map((iso) => Date.parse(iso)).filter(Number.isFinite);
+  return next.length ? Math.min(...next) : nowMs + 15 * 60_000;
+}
 
 /** How long after its time a briefing may still be written (a garrison that was down at 07:30 still delivers at 08:10, not at 15:00). */
 export const CATCH_UP_MINUTES = 180;
@@ -449,7 +499,7 @@ export async function gatherFacts(input: {
   const packets: BriefingPacketMap = {};
   const on = (id: BriefingSectionId) => settings.sections[id];
 
-  const [weather, calendar, mail, reminders, goals, agents, approvals, maintenance] = await Promise.all([
+  const [weather, calendar, mail, reminders, goals, agents, approvals, maintenance, breaking] = await Promise.all([
     on("weather") ? fetchSource(sources.weather, timeoutMs) : undefined,
     on("calendar") ? fetchSource(sources.calendar && (() => sources.calendar!(window)), timeoutMs) : undefined,
     on("mail") ? fetchSource(sources.mail, timeoutMs) : undefined,
@@ -458,7 +508,16 @@ export async function gatherFacts(input: {
     on("agents") ? fetchSource(sources.agents && (() => sources.agents!(sinceMs)), timeoutMs) : undefined,
     on("approvals") ? fetchSource(sources.approvals, timeoutMs) : undefined,
     on("maintenance") && sources.maintenance ? fetchSource(() => sources.maintenance!(sinceMs), timeoutMs) : undefined,
+    kind === "morning" && on("breaking") && sources.breaking ? fetchSource(sources.breaking, timeoutMs) : undefined,
   ]);
+
+  if (breaking) {
+    const items = (breaking.value ?? [])
+      .filter((b) => b && typeof b.what === "string" && b.what.trim())
+      .slice(0, 3)
+      .map((b) => ({ what: flat(b.what, CAPS.textChars), fix: flat(b.fix, 200), count: Math.max(1, Math.floor(Number(b.count) || 1)) }));
+    packets.breaking = { id: "breaking", status: breaking.status, ...(breaking.status === "ok" ? { data: { items } } : {}) };
+  }
 
   if (weather) {
     packets.weather = { id: "weather", status: weather.status, ...(weather.status === "ok" ? { data: { conditions: flat(weather.value, CAPS.weatherChars) } } : {}) };
@@ -645,7 +704,7 @@ export function factsForPrompt(facts: BriefingFacts): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const id of BRIEFING_SECTION_IDS) {
     const p = facts.packets[id];
-    if (!p) continue;
+    if (!p || FIXED_SECTIONS.includes(id)) continue;
     out[id] = { status: p.status, ...(p.window ? { window: p.window } : {}), ...(p.status === "ok" ? (p.data as Record<string, unknown>) : {}) };
   }
   return out;
@@ -654,7 +713,7 @@ export function factsForPrompt(facts: BriefingFacts): Record<string, unknown> {
 export function buildBriefingPrompt(input: { facts: BriefingFacts; agentName: string; agentRole?: string }): string {
   const { facts, agentName } = input;
   const kindWord = facts.kind === "morning" ? "morning" : "evening";
-  const ids = BRIEFING_SECTION_IDS.filter((id) => facts.packets[id]?.status === "ok");
+  const ids = BRIEFING_SECTION_IDS.filter((id) => facts.packets[id]?.status === "ok" && !FIXED_SECTIONS.includes(id));
   const role = input.agentRole ? flat(input.agentRole, 500) : "";
   const body = neutralize(JSON.stringify(factsForPrompt(facts), null, 1));
   return [
@@ -708,7 +767,7 @@ export function parseBriefingReply(raw: string, facts: BriefingFacts): Parsed | 
       const s = rawSection as Record<string, unknown>;
       const id = typeof s.id === "string" ? (s.id.trim() as BriefingSectionId) : undefined;
       // A section the facts do not support never reaches the owner.
-      if (!id || !(BRIEFING_SECTION_IDS as readonly string[]).includes(id) || facts.packets[id]?.status !== "ok" || seen.has(id)) continue;
+      if (!id || !(BRIEFING_SECTION_IDS as readonly string[]).includes(id) || FIXED_SECTIONS.includes(id) || facts.packets[id]?.status !== "ok" || seen.has(id)) continue;
       const items: BriefingItem[] = [];
       for (const rawItem of Array.isArray(s.items) ? s.items : []) {
         if (items.length >= 5) break;
@@ -814,6 +873,38 @@ export function factsCard(facts: BriefingFacts): Parsed {
   return { headline: headline.slice(0, 120), spokenText: toSpeakable(spoken, 900), sections };
 }
 
+/** The owner-connectable sources this card could not show because they are not set up. */
+export function notConnected(facts: BriefingFacts): BriefingSectionId[] {
+  return CONNECTABLE.filter((id) => facts.packets[id]?.status === "not_connected");
+}
+
+/**
+ * The garrison-written sections (FIXED_SECTIONS), added to whichever body the
+ * card ends up with. `connectHint` is decided by the service (at most weekly);
+ * when it is on, the one "Connect calendar, weather, mail" line replaces the
+ * three not-connected markers.
+ */
+export function fixedSections(facts: BriefingFacts, opts: { connectHint: boolean }): BriefingSection[] {
+  const out: BriefingSection[] = [];
+  const breaking = facts.packets.breaking;
+  if (breaking?.status === "ok") {
+    const items = (breaking.data as { items: FactBreaking[] }).items;
+    if (items.length) {
+      out.push({
+        id: "breaking",
+        title: SECTION_TITLES.breaking(facts.kind),
+        body: "What failed most this week, ranked by how much it cost you.",
+        items: items.map((b) => ({ text: `${b.what} (${b.count}x)`, detail: `Fix: ${b.fix}` })),
+      });
+    }
+  }
+  const missing = notConnected(facts);
+  if (opts.connectHint && missing.length) {
+    out.push({ id: "setup", title: SECTION_TITLES.setup(facts.kind), body: `Connect ${missing.join(", ")} to see them in your briefing.`, items: [] });
+  }
+  return out;
+}
+
 // ─── The service ──────────────────────────────────────────────────────────
 
 export interface BriefingAgents {
@@ -852,6 +943,8 @@ export class BriefingService {
   private readonly cardsDir: string;
   private readonly now: () => number;
   private running: { kind: BriefingKind; promise: Promise<GenerateOutcome> } | null = null;
+  /** The clock skips its disk reads until this instant (see quietUntil). */
+  private quietUntilMs = 0;
 
   constructor(private readonly opts: BriefingServiceOptions) {
     this.dir = path.join(opts.home, "briefings");
@@ -873,6 +966,7 @@ export class BriefingService {
   async updateSettings(patch: Record<string, unknown>): Promise<BriefingSettings> {
     const next = applySettingsPatch(await this.getSettings(), patch, this.knownAgent);
     await writeJsonFile(path.join(this.dir, "settings.json"), next);
+    this.quietUntilMs = 0; // new times or zone: the clock looks again on its next tick
     return next;
   }
 
@@ -883,7 +977,17 @@ export class BriefingService {
   // state
   private async loadState(): Promise<BriefingState> {
     const raw = await readJsonFile<BriefingState>(path.join(this.dir, "state.json"));
-    return raw && typeof raw === "object" && raw.runs && typeof raw.runs === "object" ? { runs: { ...raw.runs } } : { runs: {} };
+    if (!raw || typeof raw !== "object" || !raw.runs || typeof raw.runs !== "object") return { runs: {} };
+    return { runs: { ...raw.runs }, ...(Number.isFinite(raw.connectHintAt) ? { connectHintAt: raw.connectHintAt } : {}) };
+  }
+
+  /** Show the connect line now? At most once per connectHintEveryMs; records the showing. */
+  private async takeConnectHint(nowMs: number): Promise<boolean> {
+    const state = await this.loadState();
+    if (state.connectHintAt !== undefined && nowMs - state.connectHintAt < connectHintEveryMs()) return false;
+    state.connectHintAt = nowMs;
+    await writeJsonFile(path.join(this.dir, "state.json"), state);
+    return true;
   }
 
   private async saveLatch(day: string, kind: BriefingKind, change: (prev: RunLatch | undefined) => RunLatch): Promise<void> {
@@ -947,13 +1051,19 @@ export class BriefingService {
   }
 
   // the clock
-  /** The scheduler's check: write whichever briefing is due, once. Resolves when it is done. */
+  /** The scheduler's check: write whichever briefing is due, once. Resolves when it is done.
+   *  Undefined = nothing was due; the caller reports that as "idle" and audits nothing. */
   async tick(): Promise<BriefingKind | undefined> {
     if (process.env.ARES_BRIEFINGS === "0" || this.running || this.opts.isPaused?.()) return undefined;
+    const nowMs = this.now();
+    if (nowMs < this.quietUntilMs) return undefined;
     const settings = await this.getSettings();
     const timeZone = resolveTimeZone(settings.timezone);
-    const kind = dueKind({ nowMs: this.now(), settings, state: await this.loadState(), timeZone });
-    if (!kind) return undefined;
+    const kind = dueKind({ nowMs, settings, state: await this.loadState(), timeZone });
+    if (!kind) {
+      this.quietUntilMs = quietUntil(settings, nowMs, timeZone);
+      return undefined;
+    }
     const outcome = await this.generate(kind, { manual: false });
     if (!outcome.ok) this.opts.log?.(`briefings: ${kind} not written (${outcome.reason}: ${outcome.message})`);
     return kind;
@@ -985,7 +1095,7 @@ export class BriefingService {
       const agentId = persona ? persona.id : "ares";
       const agentName = persona?.name ?? this.opts.defaultAgentName ?? "Ares";
       const facts = await gatherFacts({ kind, settings, sources: this.opts.sources, nowMs, timeZone, timeoutMs: this.opts.sourceTimeoutMs });
-      const answered = BRIEFING_SECTION_IDS.filter((id) => facts.packets[id]?.status === "ok");
+      const answered = BRIEFING_SECTION_IDS.filter((id) => facts.packets[id]?.status === "ok" && !FIXED_SECTIONS.includes(id));
 
       let parsed: Parsed | null = null;
       let generator: BriefingCard["generator"] = "facts";
@@ -1002,6 +1112,8 @@ export class BriefingService {
         }
       }
       const body = parsed ?? factsCard(facts);
+      const connectHint = notConnected(facts).length > 0 && (await this.takeConnectHint(nowMs).catch(() => false));
+      const sections = [...body.sections, ...fixedSections(facts, { connectHint })].sort((a, b) => BRIEFING_SECTION_IDS.indexOf(a.id) - BRIEFING_SECTION_IDS.indexOf(b.id));
       const card: BriefingCard = {
         id: `b_${new Date(nowMs).toISOString().replace(/\D/g, "").slice(0, 14)}_${kind === "morning" ? "m" : "e"}${randomBytes(2).toString("hex")}`,
         kind,
@@ -1009,13 +1121,16 @@ export class BriefingService {
         day,
         timeZone,
         headline: body.headline,
-        sections: body.sections,
+        sections,
         spokenText: body.spokenText ?? factsCard(facts).spokenText ?? body.headline,
         agentId,
         agentName,
+        // A source that is simply not set up is not news on every card: it is the
+        // one weekly "connect" line instead (fixedSections). Only sources that
+        // were connected and failed or timed out are listed as missing.
         missing: BRIEFING_SECTION_IDS.flatMap((id) => {
           const p = facts.packets[id];
-          return p && p.status !== "ok" ? [{ id, reason: p.status as MissingReason }] : [];
+          return p && p.status !== "ok" && p.status !== "not_connected" ? [{ id, reason: p.status as MissingReason }] : [];
         }),
         generator,
         manual,

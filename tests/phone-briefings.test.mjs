@@ -375,7 +375,7 @@ test("write: a turn that hangs is cut off at its timeout and the card is written
   assert.ok(calls.logs.some((l) => /timed out/.test(l)));
 });
 
-test("write: with nothing connected no turn is spent, no push is sent, and the card says what is missing", async (t) => {
+test("write: with nothing connected no turn is spent, no push is sent, and ONE line says what to connect", async (t) => {
   const home = await tempHome(t);
   const { svc, calls } = service(home, { sources: {} });
   await svc.updateSettings({ timezone: NY });
@@ -384,9 +384,9 @@ test("write: with nothing connected no turn is spent, no push is sent, and the c
   assert.equal(out.card.generator, "facts");
   assert.equal(calls.turns.length, 0, "no model call for an empty briefing");
   assert.equal(calls.pushes.length, 0, "and no reason to wake anyone");
-  assert.deepEqual(out.card.sections, []);
-  assert.deepEqual(out.card.missing.map((m) => m.id).sort(), ["agents", "approvals", "calendar", "goals", "mail", "reminders", "weather"]);
-  assert.ok(out.card.missing.every((m) => m.reason === "not_connected"));
+  assert.deepEqual(out.card.sections.map((s) => s.id), ["setup"]);
+  assert.equal(out.card.sections[0].body, "Connect calendar, weather, mail to see them in your briefing.");
+  assert.deepEqual(out.card.missing, [], "not connected is not a missing marker on every card");
 });
 
 test("write: missing sources are listed on a card that still has others; a manual run does not push", async (t) => {
@@ -395,7 +395,8 @@ test("write: missing sources are listed on a card that still has others; a manua
   await svc.updateSettings({ timezone: NY });
   const out = await svc.generate("evening", { manual: true });
   assert.equal(out.card.manual, true);
-  assert.deepEqual(out.card.missing, [{ id: "mail", reason: "not_connected" }, { id: "goals", reason: "failed" }]);
+  assert.deepEqual(out.card.missing, [{ id: "goals", reason: "failed" }], "a source that failed is missing; one never connected is the connect line");
+  assert.equal(out.card.sections.find((s) => s.id === "setup")?.body, "Connect mail to see them in your briefing.");
   assert.equal(calls.pushes.length, 0, "the phone that asked is already looking");
   assert.equal(calls.audits[0].actor, "owner");
   const quiet = service(await tempHome(t));

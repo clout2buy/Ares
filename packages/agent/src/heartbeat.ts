@@ -46,15 +46,21 @@ export async function runHeartbeatTick(opts: {
   // promised to the owner outranks a TODO marker.
   const overdue = await overdueTrackingBlock(home, now).catch(() => "");
   if (overdue) findings.push(overdue);
+  // A check the engine cannot evaluate is reported in the state file, never as
+  // an alert: 67 alerts reading "Check not implemented yet: Are there
+  // uncommitted changes older than 2 hours?" told the owner nothing about his
+  // work, only about this checklist's parser.
+  const unimplemented: string[] = [];
   for (const task of tasks) {
-    const finding = await evaluateHeartbeatTask(task, opts.workspace);
-    if (finding) findings.push(finding);
+    const finding = await evaluateHeartbeatTask(task, opts.workspace, now);
+    if (finding === UNIMPLEMENTED) unimplemented.push(task);
+    else if (finding) findings.push(finding);
   }
   // Autonomous self-reflection: no HEARTBEAT.md required. An idle tick that
   // finds a broken or failing capability surfaces it as an alert.
   findings.push(...(await reflectHeartbeat(home)));
 
-  if (tasks.length > 0) await writeHeartbeatState(paths.heartbeatState, now, tasks, findings);
+  if (tasks.length > 0) await writeHeartbeatState(paths.heartbeatState, now, tasks, findings, unimplemented);
   if (findings.length === 0) return { status: tasks.length > 0 ? "ok" : "skipped", text: "HEARTBEAT_OK", tasks, findings: [] };
   return { status: "alert", text: findings.join("\n").slice(0, opts.config.heartbeat.ackMaxChars), tasks, findings };
 }
@@ -130,8 +136,13 @@ export function heartbeatChecks(text: string): string[] {
   return [...seen];
 }
 
-async function evaluateHeartbeatTask(task: string, workspace: string): Promise<string | null> {
+const UNIMPLEMENTED = Symbol("unimplemented");
+
+async function evaluateHeartbeatTask(task: string, workspace: string, now: Date = new Date()): Promise<string | null | typeof UNIMPLEMENTED> {
   const lower = task.toLowerCase();
+  if (lower.includes("uncommitted")) {
+    return await staleUncommitted(workspace, now, staleHoursFrom(task));
+  }
   if (lower.includes("git status")) {
     try {
       const { stdout } = await execFileAsync("git", ["status", "--short"], { cwd: workspace, windowsHide: true, timeout: 5_000 });
@@ -159,10 +170,46 @@ async function evaluateHeartbeatTask(task: string, workspace: string): Promise<s
     return await scanTodos(workspace);
   }
   // A check the engine cannot evaluate is a defect in the CHECKLIST, not in the
-  // world. Reporting it as "needs attention" made every unrecognised line a
-  // permanent alarm; naming it unimplemented is true and actionable (write the
-  // check), and callers that deliver alerts de-dupe it.
-  return `Check not implemented yet: ${task}`;
+  // world. It is recorded (heartbeat-state.json `unimplemented`) and never
+  // raised: an alert must be about something the owner can act on.
+  return UNIMPLEMENTED;
+}
+
+/** "older than 2 hours" / "older than 30 minutes" in the check's own words; default 2 hours. */
+function staleHoursFrom(task: string): number {
+  const m = /older than\s+(\d+(?:\.\d+)?)\s*(h|hours?|m|min|minutes?)\b/i.exec(task);
+  if (!m) return 2;
+  const n = Number(m[1]);
+  return /^m/i.test(m[2]!) ? n / 60 : n;
+}
+
+/**
+ * Changed or untracked files whose last write is older than `hours`: work
+ * that has sat uncommitted long enough to be at risk. Not a repo, git missing
+ * or a clean tree is not a finding.
+ */
+export async function staleUncommitted(workspace: string, now: Date, hours: number): Promise<string | null> {
+  let stdout = "";
+  try {
+    ({ stdout } = await execFileAsync("git", ["status", "--porcelain", "-z"], { cwd: workspace, windowsHide: true, timeout: 5_000 }));
+  } catch {
+    return null;
+  }
+  const { stat } = await import("node:fs/promises");
+  const cutoff = now.getTime() - hours * 3_600_000;
+  const stale: string[] = [];
+  const entries = stdout.split("\u0000").filter(Boolean);
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    const code = entry.slice(0, 2);
+    const rel = entry.slice(3);
+    if (code.startsWith("R") || code.startsWith("C")) i++; // -z puts the rename source in the next field
+    const st = await stat(path.join(workspace, rel)).catch(() => null);
+    if (st && st.isFile() && st.mtimeMs <= cutoff) stale.push(rel);
+  }
+  if (stale.length === 0) return null;
+  const label = hours >= 1 ? `${Number(hours.toFixed(1))}h` : `${Math.round(hours * 60)}m`;
+  return `Uncommitted changes older than ${label}: ${stale.slice(0, 5).join(", ")}${stale.length > 5 ? ` and ${stale.length - 5} more` : ""}`;
 }
 
 async function scanTodos(workspace: string): Promise<string | null> {
@@ -192,8 +239,9 @@ async function writeHeartbeatState(
   now: Date,
   tasks: readonly string[],
   findings: readonly string[],
+  unimplemented: readonly string[] = [],
 ): Promise<void> {
-  const payload = JSON.stringify({ lastRunAt: now.toISOString(), tasks, findings }, null, 2) + "\n";
+  const payload = JSON.stringify({ lastRunAt: now.toISOString(), tasks, findings, ...(unimplemented.length ? { unimplemented } : {}) }, null, 2) + "\n";
   await writeFileAtomic(file, payload).catch(async () => {
     await writeFile(file, payload, "utf8");
   });

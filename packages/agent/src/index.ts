@@ -20,7 +20,7 @@ export { pinOwnerMemory, PINNED_MEMORY_MAX_CHARS } from "./memory/pinned.js";
 export type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult, CanonicalMemoryInput } from "./memory/types.js";
 export { memoryEntryToCanonical } from "./memory/types.js";
 export { onLifecycle, emitLifecycle, type LifecycleEvent, type DreamPhase } from "./lifecycle/bus.js";
-export { runHeartbeatTick, startHeartbeatLoop, heartbeatPass, heartbeatEveryMs, type HeartbeatResult } from "./heartbeat.js";
+export { runHeartbeatTick, startHeartbeatLoop, heartbeatPass, heartbeatEveryMs, staleUncommitted, type HeartbeatResult } from "./heartbeat.js";
 export {
   ReflectionScheduler,
   type ReflectionTrigger,

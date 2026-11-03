@@ -41,10 +41,17 @@ test("V4 V3: heartbeat skips empty HEARTBEAT.md and alerts on configured task", 
   const skipped = await runHeartbeatTick({ home, workspace, config, now: new Date("2026-05-28T14:00:00Z") });
   assert.equal(skipped.status, "skipped");
 
+  // A check the engine cannot evaluate is recorded, never raised as an alert.
   await fs.writeFile(path.join(home, "HEARTBEAT.md"), "- Check custom thing\n", "utf8");
+  const quiet = await runHeartbeatTick({ home, workspace, config, now: new Date("2026-05-28T14:00:00Z") });
+  assert.equal(quiet.status, "ok");
+  assert.deepEqual(quiet.findings, []);
+  // A check it can evaluate still alerts.
+  await fs.writeFile(path.join(workspace, "notes.txt"), "TODO: real\n", "utf8");
+  await fs.writeFile(path.join(home, "HEARTBEAT.md"), "- Any new TODOs?\n", "utf8");
   const alert = await runHeartbeatTick({ home, workspace, config, now: new Date("2026-05-28T14:00:00Z") });
   assert.equal(alert.status, "alert");
-  assert.match(alert.text, /custom thing/);
+  assert.match(alert.text, /TODO markers found: notes\.txt/);
 });
 
 test("V4 V4: LIGHT dreaming stages durable session signals", async () => {

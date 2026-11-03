@@ -55,7 +55,7 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout, stderr } from "node:process";
 import type { ContentBlock, PermissionMode, PermissionPromptDecision, TurnEvent } from "@ares/protocol";
-import { isReasoningLevel, REASONING_LEVELS, messageText, redactSecrets } from "@ares/protocol";
+import { activityLineFor, isReasoningLevel, REASONING_LEVELS, messageText, redactSecrets } from "@ares/protocol";
 import type { ToolPermissionRequest } from "@ares/core";
 import { HeapAllocationSampler, heapSamplerEnabled } from "@ares/core";
 import { notice } from "../terminalUi.js";
@@ -518,7 +518,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   };
   // Names a chat by its topic once a turn ends — bound once rooms exist below.
   let autoTitle: ((sessionId: string) => void) | undefined;
-  const tagEmit = (sessionId: string | undefined, obj: Record<string, unknown>): void => {
+  const tagEmit = (sessionId: string | undefined, rawObj: Record<string, unknown>): void => {
+    // The plain-English line ("Running the tests") rides on the event itself,
+    // so the phone and Telegram can show what the desktop shows without their
+    // own table (@ares/protocol activityLine.ts). Never overwrites one set upstream.
+    const line = rawObj.activityLine === undefined ? activityLineFor(rawObj) : undefined;
+    const obj = line ? { ...rawObj, activityLine: line } : rawObj;
     const payload = sessionId && sessionId !== DEFAULT_SID ? { ...obj, sessionId } : obj;
     if (typeof obj.type === "string") {
       lastEventBySession.set(sessionId || DEFAULT_SID, { type: obj.type, at: Date.now() });

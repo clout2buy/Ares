@@ -630,7 +630,7 @@ export function AgentList({
                     <strong>{r.agent?.name ?? "Ares"}</strong>
                     {r.busy ? <em className="agentTyping"><i /><i /><i /></em> : r.at ? <span className="agentRowTime">{chatTime(r.at)}</span> : null}
                   </span>
-                  <span className="agentRowPreview">{r.preview}</span>
+                  <span className="agentRowPreview" data-job={r.busy ? "1" : "0"}>{r.preview}</span>
                 </span>
               </button>
               {r.agent ? (

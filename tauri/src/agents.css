@@ -476,6 +476,18 @@
 .ares.ares .chat[data-imsg="1"] > .notice[data-tone="dim"] { display: none; }
 /* the typing bubble says what the agent is doing right now */
 .imsgTyping .typingNow { margin: 0 0 0 10px; font: 500 11.5px/1.3 var(--font, system-ui); color: var(--faint); align-self: center; }
+/* the live activity line: done steps faint with a check, the current one
+   plain, at most three lines. Static: lines swap in place, nothing pulses. */
+.agentRowPreview[data-job="1"] { color: var(--accent, #e8663a); }
+.imsgTyping .activityLines { display: flex; flex-direction: column; gap: 2px; margin: 0 0 0 10px; align-self: center; min-width: 0; max-width: min(460px, 70%); }
+.imsgTyping .activityLine { font: 500 12px/1.35 var(--font, system-ui); color: var(--muted, #5b606b); overflow-wrap: anywhere; }
+.imsgTyping .activityLine[data-done="1"] { color: var(--faint); font-weight: 400; }
+.imsgTyping .activityLine[data-failed="1"] { color: var(--faint); font-style: italic; }
+.imsgTyping .activityCheck { color: var(--faint); }
+.imsgTyping .activityElapsed { color: var(--faint); font-weight: 400; }
+.imsgTyping .activityStuck { font: 400 11.5px/1.35 var(--font, system-ui); color: var(--faint); }
+.imsgTyping .activityStop { all: unset; cursor: pointer; color: var(--accent, #e8663a); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.imsgTyping .activityStop:focus-visible { outline: 2px solid var(--accent, #e8663a); outline-offset: 2px; border-radius: 3px; }
 .ares.ares .chat[data-imsg="1"] > .working { display: none; }
 
 /* typing… */

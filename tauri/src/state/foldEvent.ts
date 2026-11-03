@@ -14,12 +14,21 @@ import {
   type CodingBackendVm,
 } from "./session";
 import { compact, stringify, draftTargetPath } from "../lib/format";
+import { foldActivity, learnDraftTarget } from "../activityLine";
 
 /** Fold one daemon event into the session — pure-ish, works on a draft copy. */
 export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
   const items = [...s.items];
   const last = items[items.length - 1];
   const session = { ...s, items, lastEventAt: Date.now() };
+  // The plain-English step history (typing bubble + job line). Folded from the
+  // PRE-event state, so turn_phase can tell it is still preparing.
+  session.activitySteps = foldActivity(s.activitySteps, e as Parameters<typeof foldActivity>[1], {
+    nowMs: session.lastEventAt,
+    model: s.turnModel,
+    preparing: s.busy && s.preparing === true,
+    busy: s.busy,
+  });
 
   const steerIndex = (inputId?: string): number => {
     if (inputId) {
@@ -421,6 +430,7 @@ export function foldEvent(s: SessionVm, e: AresEvent): SessionVm {
             : `${prev.name} · drafting ${size}`;
           steps[idx] = { ...prev, draftChars, draftHead, label };
           items[i] = { ...it, steps };
+          if (target) session.activitySteps = learnDraftTarget(session.activitySteps, prev.id, prev.name, target, Date.now());
           session.activity = label;
         }
         break;

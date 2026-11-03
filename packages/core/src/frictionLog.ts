@@ -81,6 +81,10 @@ export interface FrictionTurn {
   /** Verifier red-flag reminders injected (continuous verify + end gate). */
   verifyReminders: number;
   compactions: number;
+  /** Compaction passes by method plus the tokens they freed (tokensBefore -
+   * tokensAfter of each compaction event), so cheap micro clearing and the
+   * lossy summarizer are separately measurable. Absent on legacy rows. */
+  compactionDetail?: CompactionDetail;
   /** Screenshot payload that rode this turn's tool_results as image blocks.
    * Images are invisible to token usage attribution (they arrive inside
    * tool_result content, not text), so this is the only place the "image tax"
@@ -90,6 +94,13 @@ export interface FrictionTurn {
   usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
   /** cacheRead / input — the prompt-cache health signal (null when no input). */
   cacheReadRatio: number | null;
+}
+
+export interface CompactionDetail {
+  micro: number;
+  summary: number;
+  ledger: number;
+  tokensFreed: number;
 }
 
 export function telemetryDir(home = aresHome()): string {
@@ -130,6 +141,7 @@ function emptyTurn(sessionId: string, context: FrictionContext): FrictionTurn {
     reasoningStalls: 0,
     verifyReminders: 0,
     compactions: 0,
+    compactionDetail: { micro: 0, summary: 0, ledger: 0, tokensFreed: 0 },
     images: { blocks: 0, approxBytes: 0 },
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
     cacheReadRatio: null,
@@ -257,6 +269,13 @@ export class FrictionRecorder {
             this.addDiagnostic("verification", ev.text, { code: "verifier" });
           }
           if (ev.source === "compaction") this.turn.compactions++;
+          break;
+        }
+        case "compaction": {
+          const detail = (this.turn.compactionDetail ??= { micro: 0, summary: 0, ledger: 0, tokensFreed: 0 });
+          if (ev.method === "micro" || ev.method === "summary" || ev.method === "ledger") detail[ev.method]++;
+          const freed = (ev.tokensBefore ?? 0) - (ev.tokensAfter ?? 0);
+          if (Number.isFinite(freed) && freed > 0) detail.tokensFreed += freed;
           break;
         }
         case "subagent_end": {
@@ -411,6 +430,8 @@ export interface FrictionSummary {
   reasoningStalls: number;
   verifyReminders: number;
   compactions: number;
+  /** Per-method compaction counts + tokens freed (zero for legacy rows). */
+  compactionDetail: CompactionDetail;
   /** Aggregate screenshot payload across turns (zero for legacy rows). */
   images: { blocks: number; approxBytes: number };
   totalInputTokens: number;
@@ -439,6 +460,7 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
     reasoningStalls: 0,
     verifyReminders: 0,
     compactions: 0,
+    compactionDetail: { micro: 0, summary: 0, ledger: 0, tokensFreed: 0 },
     images: { blocks: 0, approxBytes: 0 },
     totalInputTokens: 0,
     totalCacheReadTokens: 0,
@@ -487,6 +509,9 @@ export async function summarizeFriction(dir = telemetryDir(), days = 7): Promise
       summary.reasoningStalls += turn.reasoningStalls ?? 0;
       summary.verifyReminders += turn.verifyReminders ?? 0;
       summary.compactions += turn.compactions ?? 0;
+      for (const k of ["micro", "summary", "ledger", "tokensFreed"] as const) {
+        summary.compactionDetail[k] += turn.compactionDetail?.[k] ?? 0;
+      }
       summary.images.blocks += turn.images?.blocks ?? 0;
       summary.images.approxBytes += turn.images?.approxBytes ?? 0;
       summary.totalInputTokens += turn.usage?.inputTokens ?? 0;

@@ -184,6 +184,7 @@ export {
   telemetryDir,
   type FrictionTurn,
   type FrictionSummary,
+  type CompactionDetail,
   type FrictionSource,
   type FrictionDiagnostic,
   type FrictionSessionLocation,

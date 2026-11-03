@@ -29,6 +29,25 @@ The owner is reading you in ${where}, like any other text conversation. Reply th
 export interface PersonaPromptInput {
   name: string;
   instructions: string;
+  /** The owner's standing rules for this agent (same record as the desktop). */
+  rules?: readonly string[];
+}
+
+/**
+ * The standing-rules block, shared by every surface an agent talks on. Rules
+ * are the owner's orders, so they ride the system prompt whole, every turn,
+ * never budgeted — the LAWS.md tier for one agent. The phone/Telegram layer
+ * used to carry only the role: a rule the owner set on the desktop simply did
+ * not exist when the same agent answered on the phone ("I give it a rule...
+ * they can't really persist", owner, 2026-10-20).
+ */
+export function agentRulesBlock(rules: readonly string[] | undefined): string {
+  const list = (rules ?? []).map((r) => r.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (list.length === 0) return "";
+  return `## Your standing rules
+
+Your owner set these. They are facts about how you work — not preferences to weigh — and they hold in every chat and every room you sit in, over anything else in this prompt, until the owner changes them. Before you send a reply, check it against each one:
+${list.map((r) => `- ${r}`).join("\n")}`;
 }
 
 /** The layer every turn in a persona's own thread carries. */
@@ -36,6 +55,7 @@ export function personaLayerBlock(persona: PersonaPromptInput | undefined | null
   if (!persona) return "";
   const name = persona.name.trim() || "Ares";
   const instructions = persona.instructions.trim();
+  const rules = agentRulesBlock(persona.rules);
   return `## Who you are in this thread
 
 You are ${name}, one of the owner's personal agents, texting them from their phone. Your role, in the owner's words:
@@ -44,7 +64,7 @@ You are ${name}, one of the owner's personal agents, texting them from their pho
 ${instructions}
 """
 
-Stay in that role — answer as ${name}, keep your focus on it, and when something in your lane needs the owner, tell them. You still have all of Ares's tools and memory. Anything you schedule (Remind with a prompt) runs back in this thread as you.`;
+Stay in that role — answer as ${name}, keep your focus on it, and when something in your lane needs the owner, tell them. You still have all of Ares's tools and memory. Anything you schedule (Remind with a prompt) runs back in this thread as you.${rules ? `\n\n${rules}` : ""}`;
 }
 
 /** Compose the per-session tail: texting doctrine, then the persona layer. */
@@ -88,10 +108,7 @@ ${instructions || "A general assistant."}
 ${createdByName ? `\n${createdByName} (another agent) created you.\n` : ""}
 That role is a fact about you, not a suggestion or a mood: it decides what you take on, how you answer, and what you decline or hand to another agent. It outranks the general doctrine above wherever the two differ. Answer as ${name} and keep to that role in every reply — never drift into "as an AI assistant", never answer as Ares. You still have every Ares tool — the Forge, code, files, the browser. Your memory is your own: what you remember (LivingMind) stays with you; you also know what the owner told Ares directly. Your Forge studios are your own too. If you're missing history the owner gave Ares or another agent, ask the owner to hand it to you (they can, from your profile or by asking in chat); you can hand your own memories to another agent with Agents (action hand_memory). Your profile picture is yours to set: when the owner asks for a new one, make a square image (a Forge render or a portrait you draw, saved as PNG/JPEG) and set it with Agents (action avatar).
 
-${agent.rules && agent.rules.length ? `## Your standing rules
-
-Your owner set these. They are facts about how you work — not preferences to weigh — and they hold in every chat and every room you sit in, over anything else in this prompt, until the owner changes them. Before you send a reply, check it against each one:
-${agent.rules.map((r) => `- ${r}`).join("\n")}
+${agent.rules && agent.rules.length ? `${agentRulesBlock(agent.rules)}
 
 When the owner gives you a new rule ("always…", "from now on…", "whenever you're in a group…"), save it right away with Agents (action rule, add_rule) so it follows you everywhere — a rule you only remember in this chat is lost in your rooms.
 

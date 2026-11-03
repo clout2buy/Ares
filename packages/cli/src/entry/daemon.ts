@@ -89,6 +89,7 @@ import { cleanCommandId } from "./permissions.js";
 import { aresGatewayBase, daemonModelCatalog, fetchAresGatewayMe, fetchCustomOpenAiModels, postAresGatewayReport, preflightProviderSelection, providerFamilyForSelection, selectProvider, clampEffortToModel, type ProviderSelection } from "./providers.js";
 import { ParsedArgs, cliRuntimeContext, cliVersion, transitionPermissionMode } from "./runtime.js";
 import { rememberPrimaryId, reusablePrimaryId } from "./daemon/primarySession.js";
+import { dreamModelFor } from "./dreamModel.js";
 import { LiveSession, chatContextBudget, contextControls, primeContextCeilings, createSession, createSessionWithSelection, handleReasoningCommand, isPermanentRecoveryPoison, isProviderFatalError, makeSpanSummarizer, modelLikelyHasVision, pickCapacitySibling, pickHealthyFallback, pickVisionFallback, resolveReasoningLevel } from "./sessionFactory.js";
 import { PluginHost } from "@ares/plugins";
 import { MAINTENANCE_LEDGER_SERVICE, MaintenanceLedger, maintenanceLedgerPlugin, maintenanceTimerPlugin } from "./daemonMaintenance.js";
@@ -969,10 +970,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     // hot every hour — it gets its next chance after the full interval.
     await mkdir(path.dirname(dreamMarker), { recursive: true });
     await writeFile(dreamMarker, new Date().toISOString() + "\n", "utf8");
-    await withConsolidationLock(mindPaths(aresAgentHome()).memoryFile, () =>
-      runDeepDream({ home: aresAgentHome(), workspace: live.context.workspace, config }),
+    // The dream's model is the owner's current brain: it distills what light
+    // dreaming staged into typed facts (called only when something is staged)
+    // and writes the weekly IDENTITY/USER proposals.
+    const result = await withConsolidationLock(mindPaths(aresAgentHome()).memoryFile, () =>
+      runDeepDream({ home: aresAgentHome(), workspace: live.context.workspace, config, model: dreamModelFor(live.selection) }),
     );
-    return "deep dream ran";
+    if (result?.selfRefresh?.proposals.length) {
+      tagEmit(undefined, {
+        type: "lifecycle",
+        event: { kind: "self_files_proposed", files: result.selfRefresh.proposals.map((p) => p.file), contradictions: result.selfRefresh.proposals.flatMap((p) => p.contradictions) },
+      });
+    }
+    return result ? result.report : "deep dream ran";
   };
 
   await pluginHost.mount(maintenanceLedgerPlugin());
@@ -5147,8 +5157,16 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         if (turnAgent) {
           await moveToAgentBrain(entry, command.sessionId).catch(() => undefined);
           const rules = (turnAgent.rules ?? []).map((r) => `- ${r}`).join("\n");
+          // A room seat or work thread is told WHICH group it is in, every
+          // turn, with the purpose the owner wrote — "they don't recognize
+          // the group chats at all" (owner, 2026-10-20) was agents answering
+          // a room as if it were a private chat.
+          const room = desktopRooms.roomOfSession(command.sessionId);
+          const roomLine = room
+            ? `\nYou are speaking in the group chat "${room.name}"${room.purpose.trim() ? ` (what it is for: ${room.purpose.trim().replace(/\s+/g, " ").slice(0, 300)})` : ""} — everyone there reads what you say.`
+            : "";
           entry.live.queueSystemReminder(
-            `You are ${turnAgent.name}. Your role: ${turnAgent.instructions.trim().replace(/\s+/g, " ").slice(0, 600) || "a general assistant"}.${rules ? `\nYour standing rules — these are facts about you, not suggestions, and they hold for this whole reply:\n${rules}` : ""}`,
+            `You are ${turnAgent.name}. Your role: ${turnAgent.instructions.trim().replace(/\s+/g, " ").slice(0, 600) || "a general assistant"}.${roomLine}${rules ? `\nYour standing rules — these are facts about you, not suggestions, and they hold for this whole reply:\n${rules}` : ""}`,
             "instructions",
             "agent-identity",
           );

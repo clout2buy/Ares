@@ -1,15 +1,29 @@
-import { appendFile, mkdir, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { agentPaths, aresAgentHome } from "./paths.js";
 import { readTextIfExists, writeFileAtomic } from "./files.js";
 import { expandHomePath, type AresAgentConfig } from "./config.js";
 import { createMemoryStore } from "./memory/vectorStore.js";
-import type { MemoryCategory } from "./memory/types.js";
 import { emitLifecycle } from "./lifecycle/bus.js";
 import { loadSelfModel } from "./self/store.js";
 import { reflect } from "./self/reflect.js";
 import { gainForTarget } from "./voice.js";
-import { MemoryRouter, MemoryStore as LivingMemoryStore, isOperationalNoise, migrateLegacyVectors, mindPaths } from "@ares/mind";
+import {
+  MemoryRouter,
+  MemoryStore as LivingMemoryStore,
+  OWNER_SCOPE,
+  curatedTypeOf,
+  isOperationalNoise,
+  isRawQuote,
+  mergeCuratedFacts,
+  mergeDurableFacts,
+  migrateLegacyVectors,
+  mindPaths,
+  renderCuratedMemory,
+  type CuratedFact,
+  type DurableFact,
+} from "@ares/mind";
+import { runSelfFileRefresh, type SelfFileRewriter, type SelfRefreshResult } from "./selfRefresh.js";
 
 const DREAM_MEMORY_ITEM_CHARS = 420;
 const DREAM_MEMORY_MAX_ITEMS = 120;
@@ -19,7 +33,29 @@ export interface DreamResult {
   promoted: number;
   pruned: number;
   report: string;
+  /** DEEP only: the weekly self-file refresh, when it ran. */
+  selfRefresh?: SelfRefreshResult;
 }
+
+/**
+ * The model behind a deep dream (the daemon supplies it; garrison/CLI may
+ * not). `distill` turns staged session notes into typed facts — called ONLY
+ * when something is staged, so an idle night costs no model call.
+ * `rewriteSelfFile` writes the weekly IDENTITY/USER proposal.
+ */
+export interface DreamModel {
+  distill?: (notes: readonly string[]) => Promise<DurableFact[]>;
+  rewriteSelfFile?: SelfFileRewriter;
+}
+
+/** Light dreaming's raw session notes, waiting for a model to distill them.
+ *  JSONL of {at, sessionId, text}; consumed by the next deep dream. */
+export function dreamStagingFile(home: string): string {
+  return path.join(agentPaths(home).memoryDir, ".dream-staged.jsonl");
+}
+
+/** Staged notes kept while no model is around to distill them. */
+const DREAM_STAGED_MAX = 200;
 
 export async function runLightDream(opts: {
   home?: string;
@@ -46,15 +82,16 @@ export async function runLightDream(opts: {
   const daily = path.join(paths.memoryDir, `${now.toISOString().slice(0, 10)}.md`);
   await mkdir(path.dirname(daily), { recursive: true });
   await appendFile(daily, [`\n## Session ${opts.sessionId}`, ...snippets.map((s) => `- ${s}`), ""].join("\n"), "utf8");
-  const store = await createMemoryStore(opts.config, home);
-  // Dream candidates must land in BOTH substrates: the v4 vector store (for the
-  // DEEP-dream promotion pass that reads store.list()) AND the v6 living memory
-  // the live turn actually recalls from. Writing only v4 left dreamed memories
-  // invisible to recall — staged into a silo the live brain never reads.
+  // Staged, NOT promoted: these are the owner's raw words ("User asked: ...").
+  // They used to go straight into the v4 store, and deep dreaming copied them
+  // verbatim into MEMORY.md — 45 quotes, the same line six times under six
+  // ids, no fact anywhere (field MEMORY.md, 2026-11-02). Now they wait in the
+  // staging file for the deep dream's model pass to distill into typed facts;
+  // the daily log above keeps the words themselves.
+  await stageDreamNotes(home, opts.sessionId, snippets, now);
+  // The v6 living memory still gets them as episodes, so recall can find what
+  // was said; consolidation fades the ones that never come up again.
   const living = await LivingMemoryStore.open(mindPaths(home).memoryFile).catch(() => null);
-  for (const snippet of snippets) {
-    await store.add({ category: classifySignal(snippet), workspace: opts.workspace, content: snippet, source: "light-dreaming", score: 0.55 });
-  }
   // Episodic in v6: a dream candidate is a raw session signal; consolidation
   // crystallizes the recurring ones into semantic. Routed through the ONE
   // write spine ("dream" channel: ungated — consolidate() merges repeats into
@@ -76,51 +113,167 @@ export async function runDeepDream(opts: {
   workspace?: string;
   config: AresAgentConfig;
   now?: Date;
+  /** Optional model hooks; see {@link DreamModel}. */
+  model?: DreamModel;
 }): Promise<DreamResult> {
   const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
-  emitLifecycle({ type: "dream_phase_started", phase: "deep" });
+  const now = opts.now ?? new Date();
+  const parts: string[] = [];
+
+  // 1. Distill what light dreaming staged — the ONLY model call a dream makes,
+  //    and only when there is something staged.
+  const distilled = await distillStagedNotes(home, opts.model?.distill);
+  if (distilled.notes > 0) parts.push(`distilled ${distilled.notes} staged note(s) into ${distilled.facts} fact(s)`);
+
+  // 2. Curate MEMORY.md from typed facts.
   const store = await createMemoryStore(opts.config, home);
   const memories = await store.list();
   // The noise gate applies at PROMOTION, not just at write time: the v4 vector
   // store is append-only (no delete API), so "Tool error observed:" rows
   // harvested by long-gone code re-surfaced into MEMORY.md on every deep dream
   // — a field user's index was 24 error entries against 5 real memories
-  // (2026-08-06). Filtering here starves legacy noise out of the index for
-  // good, because this pass REWRITES MEMORY.md wholesale.
-  // What the owner pinned is never scored, noise-gated or trimmed away.
+  // (2026-08-06). Raw quotes ("User asked: ...") are refused the same way: a
+  // chat line is history, not knowledge. What the owner pinned is never
+  // scored, noise-gated or trimmed away.
   const pinned = memories.filter((memory) => memory.source === "owner-pinned");
   const promoted = memories.filter((memory) =>
     memory.source !== "owner-pinned" &&
     memory.score >= opts.config.dreaming.minScore &&
     (memory.hits >= opts.config.dreaming.minRecallCount || memory.source === "light-dreaming") &&
-    !isOperationalNoise(memory.content)
+    !isOperationalNoise(memory.content) &&
+    !isRawQuote(memory.content)
   );
-  if (promoted.length > 0 || pinned.length > 0) {
-    const lines = ["# Memory", "", "_(Curated long-term memory. Only DEEP dreaming writes here.)_", ""];
-    const room = Math.max(0, DREAM_MEMORY_MAX_ITEMS - pinned.length);
-    for (const memory of [...pinned, ...(room > 0 ? promoted.slice(-room) : [])]) {
-      lines.push(`- [${memory.category}#${memory.id}] ${compact(memory.content, DREAM_MEMORY_ITEM_CHARS)}`);
+  const timed: Array<{ ts: number; fact: CuratedFact }> = [
+    ...pinned.map((m) => ({ ts: m.createdAt, fact: { type: curatedTypeOf(m.category), content: m.content, pinned: true } as CuratedFact })),
+    ...promoted.map((m) => ({ ts: m.createdAt, fact: { type: curatedTypeOf(m.category), content: m.content } as CuratedFact })),
+    ...(await livingCuratedFacts(home)),
+  ];
+  timed.sort((a, b) => a.ts - b.ts);
+  const curated = mergeCuratedFacts(timed.map((t) => t.fact));
+  const curatedCount = Math.min(curated.facts.length, DREAM_MEMORY_MAX_ITEMS);
+  let memoryChanged = false;
+  if (curated.facts.length > 0) {
+    const next = renderCuratedMemory(curated.facts, { max: DREAM_MEMORY_MAX_ITEMS, itemChars: DREAM_MEMORY_ITEM_CHARS });
+    const current = await readFile(paths.memory, "utf8").catch(() => "");
+    if (next !== current) {
+      await writeFileAtomic(paths.memory, next);
+      memoryChanged = true;
+      parts.push(`curated ${curatedCount} fact(s) into MEMORY.md${curated.merged > 0 ? ` (${curated.merged} duplicate(s) merged)` : ""}`);
     }
-    await writeFileAtomic(paths.memory, lines.join("\n") + "\n");
   }
   const soulPromoted = await promoteSoulRules(paths.soul, promoted, opts.config.dreaming.soulRewriteThreshold);
+  if (soulPromoted > 0) parts.push(`${soulPromoted} SOUL rule(s)`);
   // One-time v4→v6 fold: migrate the legacy vector store into living memory once,
   // guarded by a marker file so it never re-scans. Idempotent on its own too
   // (content-hash dedup) — the marker just avoids the read every deep dream.
   await migrateLegacyVectorsOnce(home, expandHomePath(opts.config.memory.jsonFallbackPath, home));
-  const now = opts.now ?? new Date();
   // Real reflection: reason over the self-model and record what to fix, acquire,
-  // or prune. This is the "why did I fail / what should I become" layer.
+  // or prune. This is the "why did I fail / what should I become" layer. The
+  // same directives as last time are not news (34 identical "[acquire] godot"
+  // blocks in the field diary) — only a changed set is written and counted.
   const selfDirectives = await reflectSelfModel(home, paths.dreamsDiary, now);
+  if (selfDirectives > 0) parts.push(`${selfDirectives} self-directive(s)`);
   // Real synthesis over the v6 living memory: crystallize recurring episodes into
   // insight nodes and recurring failures into belief nodes — the "what should I
   // believe now" pass that turns raw episodes into durable knowledge.
   const synthesized = await synthesizeLivingMemory(home, now);
-  const report = `DEEP promoted ${promoted.length} memory candidate(s), ${soulPromoted} SOUL rule(s), ${selfDirectives} self-directive(s)${synthesized ? `, ${synthesized}` : ""}.`;
+  if (synthesized) parts.push(synthesized);
+  // Weekly: propose rewritten IDENTITY.md / USER.md (never overwrites them).
+  const selfRefresh = await runSelfFileRefresh({
+    home,
+    now,
+    records: curated.facts,
+    ...(opts.model?.rewriteSelfFile ? { rewrite: opts.model.rewriteSelfFile } : {}),
+  }).catch(() => undefined);
+  if (selfRefresh?.proposals.length) {
+    const flagged = selfRefresh.proposals.reduce((n, p) => n + p.contradictions.length, 0);
+    parts.push(`proposed ${selfRefresh.proposals.map((p) => p.name).join(" + ")} rewrite${flagged > 0 ? ` (${flagged} contradiction(s) flagged)` : ""}`);
+    emitLifecycle({
+      type: "thought",
+      kind: "reflect",
+      text: `Proposed updates to ${selfRefresh.proposals.map((p) => p.name).join(" and ")} — review ${selfRefresh.proposals.map((p) => path.basename(p.file)).join(", ")}.`,
+    });
+  }
+
+  const promotedCount = memoryChanged ? curatedCount : 0;
+  // A dream that changed nothing leaves no trace: no diary line, no phase
+  // event. 470 of 542 field diary ticks were "found nothing" or identical
+  // repeats, burying the few that mattered.
+  if (parts.length === 0) {
+    return { phase: "deep", promoted: 0, pruned: 0, report: "DEEP found nothing new.", ...(selfRefresh ? { selfRefresh } : {}) };
+  }
+  const report = `DEEP ${parts.join(", ")}.`;
+  emitLifecycle({ type: "dream_phase_started", phase: "deep" });
   await appendDreamDiary(paths.dreamsDiary, now, report);
-  emitLifecycle({ type: "dream_phase_ended", phase: "deep", promoted: promoted.length, pruned: 0 });
-  return { phase: "deep", promoted: promoted.length, pruned: 0, report };
+  emitLifecycle({ type: "dream_phase_ended", phase: "deep", promoted: promotedCount, pruned: 0 });
+  return { phase: "deep", promoted: promotedCount, pruned: 0, report, ...(selfRefresh ? { selfRefresh } : {}) };
+}
+
+/**
+ * The model-written facts in living memory (the conversation distiller and
+ * the dream distiller both write them: semantic, source
+ * "conversation-reflection"), owner pool only — a guest's or an agent's
+ * facts never land in the owner's MEMORY.md.
+ */
+async function livingCuratedFacts(home: string): Promise<Array<{ ts: number; fact: CuratedFact }>> {
+  try {
+    const living = await LivingMemoryStore.open(mindPaths(home).memoryFile);
+    const out: Array<{ ts: number; fact: CuratedFact }> = [];
+    for (const node of living.all()) {
+      if (node.kind !== "semantic" || node.source !== "conversation-reflection") continue;
+      if (node.scope !== undefined && node.scope !== OWNER_SCOPE) continue;
+      if (isOperationalNoise(node.content) || isRawQuote(node.content)) continue;
+      const tags = node.tags ?? [];
+      const typeTag = tags.find((t) => t.startsWith("type:"))?.slice(5);
+      const kindTag = tags.find((t) => !["reflected", "conversation"].includes(t) && !t.includes(":"));
+      const why = tags.find((t) => t.startsWith("why:"))?.slice(4);
+      const ts = Date.parse(node.at);
+      out.push({ ts: Number.isNaN(ts) ? 0 : ts, fact: { type: curatedTypeOf(typeTag ?? kindTag), content: node.content, ...(why ? { why } : {}) } });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+async function stageDreamNotes(home: string, sessionId: string, notes: readonly string[], now: Date): Promise<void> {
+  const file = dreamStagingFile(home);
+  await mkdir(path.dirname(file), { recursive: true });
+  const existing = (await readFile(file, "utf8").catch(() => "")).split(/\r?\n/).filter(Boolean);
+  const lines = [...existing, ...notes.map((text) => JSON.stringify({ at: now.toISOString(), sessionId, text }))];
+  await writeFileAtomic(file, lines.slice(-DREAM_STAGED_MAX).join("\n") + "\n");
+}
+
+/**
+ * Hand the staged notes to the model once and write what it distills as typed
+ * facts through the write spine. Nothing staged → no call. No model → the
+ * notes stay staged for a dream that has one. A failed call keeps them too.
+ */
+async function distillStagedNotes(home: string, distill: DreamModel["distill"]): Promise<{ notes: number; facts: number }> {
+  const file = dreamStagingFile(home);
+  const raw = await readFile(file, "utf8").catch(() => "");
+  const notes = [...new Set(raw.split(/\r?\n/).filter(Boolean).map((line) => {
+    try {
+      return String((JSON.parse(line) as { text?: unknown }).text ?? "").trim();
+    } catch {
+      return "";
+    }
+  }).filter(Boolean))];
+  if (notes.length === 0 || !distill) return { notes: 0, facts: 0 };
+  let facts: DurableFact[];
+  try {
+    facts = await distill(notes);
+  } catch {
+    return { notes: 0, facts: 0 };
+  }
+  let added = 0;
+  if (Array.isArray(facts) && facts.length > 0) {
+    const living = await LivingMemoryStore.open(mindPaths(home).memoryFile);
+    added = (await mergeDurableFacts(living, facts)).added;
+  }
+  await writeFile(file, "", "utf8");
+  return { notes: notes.length, facts: added };
 }
 
 export async function runRemDream(opts: {
@@ -130,10 +283,14 @@ export async function runRemDream(opts: {
 }): Promise<DreamResult> {
   const home = aresAgentHome(opts.home);
   const paths = agentPaths(home);
-  emitLifecycle({ type: "dream_phase_started", phase: "rem" });
   const files = await readdir(paths.memoryDir).catch(() => []);
-  const report = `REM scanned ${files.filter((file) => file.endsWith(".md")).length} daily memory file(s) for cross-workspace patterns.`;
-  await appendDreamDiary(paths.dreamsDiary, opts.now ?? new Date(), report);
+  const scanned = files.filter((file) => file.endsWith(".md")).length;
+  const report = `REM scanned ${scanned} daily memory file(s) for cross-workspace patterns.`;
+  // Nothing to scan, or the same count as last time: no news, no trace.
+  if (scanned === 0 || !(await appendDreamDiary(paths.dreamsDiary, opts.now ?? new Date(), report))) {
+    return { phase: "rem", promoted: 0, pruned: 0, report };
+  }
+  emitLifecycle({ type: "dream_phase_started", phase: "rem" });
   emitLifecycle({ type: "dream_phase_ended", phase: "rem", promoted: 0, pruned: 0 });
   return { phase: "rem", promoted: 0, pruned: 0, report };
 }
@@ -192,6 +349,8 @@ async function reflectSelfModel(home: string, dreamsDiary: string, now: Date): P
     const directives = reflect(await loadSelfModel(home));
     if (directives.length === 0) return 0;
     const lines = directives.slice(0, 8).map((d) => `- [${d.kind}] ${d.capabilityName}: ${d.reason}`);
+    if (lastSelfReflection(await readFile(dreamsDiary, "utf8").catch(() => "")) === lines.join("\n")) return 0;
+    await mkdir(path.dirname(dreamsDiary), { recursive: true });
     await appendFile(dreamsDiary, `\n### Self-reflection (${now.toISOString()})\n\n${lines.join("\n")}\n`, "utf8");
     emitLifecycle({
       type: "self_reflected",
@@ -266,14 +425,6 @@ function durable(text: string): boolean {
   );
 }
 
-function classifySignal(text: string): MemoryCategory {
-  if (/\b(user|prefer|style)\b/i.test(text)) return "USER";
-  if (/\b(soul|voice|emoji|commit)\b/i.test(text)) return "SELF";
-  if (/\b(decision|architecture)\b/i.test(text)) return "DECISION";
-  if (/\b(error|correction|pushed back)\b/i.test(text)) return "FEEDBACK";
-  return "PROJECT";
-}
-
 function messageText(message: any): string {
   if (!message || !Array.isArray(message.content)) return "";
   return message.content.filter((block: any) => block.type === "text").map((block: any) => block.text).join("");
@@ -300,8 +451,33 @@ async function promoteSoulRules(soulPath: string, memories: readonly { id: numbe
   return added;
 }
 
-async function appendDreamDiary(file: string, now: Date, report: string): Promise<void> {
+/** Append one diary entry — unless it repeats the previous entry word for
+ *  word ("DEEP promoted 33 memory candidate(s)" ten nights running). Returns
+ *  whether a line was written. */
+async function appendDreamDiary(file: string, now: Date, report: string): Promise<boolean> {
+  const current = await readFile(file, "utf8").catch(() => "");
+  if (lastDiaryReport(current) === report.trim()) return false;
   await mkdir(path.dirname(file), { recursive: true });
   await appendFile(file, `\n## ${now.toISOString()}\n\n${report}\n`, "utf8");
+  return true;
+}
+
+/** The text of the last "## <timestamp>" diary entry, or undefined. */
+export function lastDiaryReport(diary: string): string | undefined {
+  const entries = [...diary.matchAll(/^## \d{4}-\d{2}-\d{2}T[^\n]*\n\n([^\n]+)/gm)];
+  return entries.at(-1)?.[1]?.trim();
+}
+
+/** The directive lines of the last "### Self-reflection" block, or undefined. */
+function lastSelfReflection(diary: string): string | undefined {
+  const at = diary.lastIndexOf("### Self-reflection");
+  if (at < 0) return undefined;
+  const body = diary.slice(at).split(/\r?\n/).slice(1);
+  const lines: string[] = [];
+  for (const line of body) {
+    if (line.startsWith("- ")) lines.push(line);
+    else if (lines.length > 0) break;
+  }
+  return lines.join("\n");
 }
 

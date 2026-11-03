@@ -143,6 +143,8 @@ variable, documented at its definition site. Quick index (default in parentheses
 | `ARES_PINNED_FAILOVER=0`, `ARES_ROUTING_BACKUP` (comma list) | Failover chain for a pinned model (also `routingBackup` in ui.json). |
 | `ARES_COMPACT_CLIP_CHARS` (1500) | Compaction clip for tool bodies; edit diffs and paths are never clipped. |
 | `ARES_TURN_MEMORY_SIM` (0.85), `ARES_MEMORY_RECENCY_WEIGHT` (0.5) | Near-duplicate collapse for captured turns; liveness ranking of live-mind nodes. |
+| `ARES_SELF_REFRESH_DAYS` (7, 0 off) | Weekly self-file refresh inside the deep dream: writes `IDENTITY.proposed.md` / `USER.proposed.md` (contradictions flagged, recent typed facts folded in); never overwrites the self-files. |
+| `ARES_MOCK_REQUEST_LOG=<file>` | Test seam: the mock provider appends every request (system + messages, reminders included) as JSONL. |
 | `ARES_MIND_OVERVIEW_LIMIT` (15) | Rows per kind in the owner's "what I know" surface (`ares mind about`, the desktop Mind pane). |
 | `ARES_CONSOLIDATE_EVERY_MIN` (90, 0 off), `ARES_CONSOLIDATE_MIN_NEW` (12) | Periodic memory consolidation in a long-lived daemon. |
 | `ARES_GAUNTLET_SCHEDULE=0`, `ARES_GAUNTLET_HOUR` (3), `ARES_GAUNTLET_WINDOW_HOURS` (3), `ARES_GAUNTLET_SUITE` (coding-v3) | Nightly gauntlet in the Garrison idle window. |

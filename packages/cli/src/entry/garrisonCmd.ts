@@ -50,6 +50,7 @@ import { synthesize, transcribe, type TelegramBridge } from "@ares/channels";
 import { PhoneNotifier, PhonePush, apnsFromEnv } from "../phonePush.js";
 import { createApprovalsApi } from "../phoneApprovals.js";
 import { LiveActivityDriver, LiveActivityRegistry, createLiveActivityApi, createWidgetNudger } from "../phoneLiveActivity.js";
+import { dreamModelFor } from "./dreamModel.js";
 import { startFamilyReplies } from "./familyWiring.js";
 import { expireDeadOwnerLeases, retireExhaustedOrphans } from "./garrisonRecovery.js";
 import { TunnelOAuth } from "../oauthTunnel.js";
@@ -629,7 +630,7 @@ export async function garrisonCommand(args: ParsedArgs): Promise<number> {
         if (agent.config.dreaming.enabled) {
           // Lock-guarded: the daemon may be consolidating the same ~/.ares memory.
           await withConsolidationLock(context.mind.memoryFile, () =>
-            runDeepDream({ home: context.home, workspace: context.workspace, config: agent.config }),
+            runDeepDream({ home: context.home, workspace: context.workspace, config: agent.config, model: dreamModelFor(selection) }),
           ).catch(() => undefined);
         }
         return trial;

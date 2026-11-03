@@ -195,22 +195,33 @@ function buildDedupeGuard(rule: DedupeRule, existing: ReadonlyArray<ExistingNode
     case "none":
       return { isDuplicate: () => null, admit: () => {} };
     case "exact": {
-      const known = new Set(existing.map((n) => normalizeExact(n.content)));
+      // Keyed by tenant scope too (#26, write side) — same rule as "near".
+      const keyOf = (scope: string | undefined, content: string) => `${scope ?? "owner"}\u0000${normalizeExact(content)}`;
+      const known = new Set(existing.map((n) => keyOf(n.scope, n.content)));
       return {
-        isDuplicate: (_w, content) => (known.has(normalizeExact(content)) ? {} : null),
-        admit: (_w, content) => void known.add(normalizeExact(content)),
+        isDuplicate: (write, content) => (known.has(keyOf(write.scope, content)) ? {} : null),
+        admit: (write, content) => void known.add(keyOf(write.scope, content)),
       };
     }
     case "similar": {
-      const priors = existing.map((n) => new Set(tokenizeSalient(normalizeFact(n.content))));
+      // A repeated fact is ONE record: the match names the node it folds into
+      // so the router reinforces it (touch) instead of silently dropping the
+      // repeat — the same rule stated three times should weigh three times.
+      // Same-scope only: a guest repeating the owner never touches the owner's node.
+      const priors = existing.map((n) => ({ id: n.id, scope: n.scope, tokens: new Set(tokenizeSalient(normalizeFact(n.content))) }));
       return {
-        isDuplicate: (_w, content) => {
+        isDuplicate: (write, content) => {
           const tokens = tokenizeSalient(normalizeFact(content));
           if (tokens.length === 0) return {}; // nothing salient → not worth storing
           const set = new Set(tokens);
-          return priors.some((prior) => prior.size > 0 && jaccard(set, prior) >= rule.threshold) ? {} : null;
+          // Tenant pools never dedupe against each other (#26, write side): a
+          // guest's fact must not swallow the owner's identical one, or vice versa.
+          const scope = write.scope ?? "owner";
+          const hit = priors.find((prior) => (prior.scope ?? "owner") === scope && prior.tokens.size > 0 && jaccard(set, prior.tokens) >= rule.threshold);
+          if (!hit) return null;
+          return hit.id ? { into: hit.id } : {};
         },
-        admit: (_w, content) => void priors.push(new Set(tokenizeSalient(normalizeFact(content)))),
+        admit: (write, content) => void priors.push({ id: undefined, scope: write.scope, tokens: new Set(tokenizeSalient(normalizeFact(content))) }),
       };
     }
     case "near": {

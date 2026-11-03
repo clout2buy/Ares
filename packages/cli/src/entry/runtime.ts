@@ -180,6 +180,7 @@ export async function printHelp(): Promise<void> {
       "  ares mind recall \"<cue>\" [--json]   Spreading-activation recall from Living Memory.",
       "  ares mind add --content \"<text>\" [--kind episodic|semantic|procedural]",
       "  ares mind list | doctor | consolidate [--json]",
+      "  ares mind tidy [--dry-run] [--json]  Rewrite MEMORY.md as typed facts: fold duplicates, move chat quotes to the daily log.",
       "                              Inspect, diagnose, or sleep-consolidate memory.",
       "  ares mind about [--limit N] [--json]   What I believe about you and this work, ranked by liveness.",
       "  ares mind edit <id> \"<text>\"          Correct a memory in place (confidence → 1).",

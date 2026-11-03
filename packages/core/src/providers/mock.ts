@@ -7,6 +7,7 @@
 //
 // Never produces tool_use blocks (so QueryEngine exits after one iteration).
 
+import { appendFileSync } from "node:fs";
 import type { Message, StreamEvent } from "@ares/protocol";
 import { messageText } from "@ares/protocol";
 import type { Provider, ProviderRequest } from "../queryEngine.js";
@@ -15,6 +16,17 @@ export class MockEchoProvider implements Provider {
   readonly name = "mock-echo";
 
   async *stream(req: ProviderRequest): AsyncGenerator<StreamEvent> {
+    // Test seam: ARES_MOCK_REQUEST_LOG=<file> appends every request (system
+    // prompt + messages, reminders included) as one JSON line, so daemon tests
+    // can assert what actually reached the wire.
+    const requestLog = process.env.ARES_MOCK_REQUEST_LOG;
+    if (requestLog) {
+      try {
+        appendFileSync(requestLog, JSON.stringify({ model: req.model, system: req.system, messages: req.messages.map((m) => ({ role: m.role, content: m.content })) }) + "\n", "utf8");
+      } catch {
+        // a test seam must never break a turn
+      }
+    }
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     const inputText = lastUser ? messageText(lastUser) : "";
     if (inputText.includes("__mock_fail_provider__")) {

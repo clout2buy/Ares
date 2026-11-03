@@ -17,6 +17,7 @@ export { loadAgentSystemContext, composeAgentSystemPrompt, resolveAgentName, sel
 export { embedText, embedOptionsFromConfig, lexicalEmbedding, type EmbedOptions } from "./memory/embed.js";
 export { createMemoryStore, formatRecallReminder, type MemoryStore } from "./memory/vectorStore.js";
 export { pinOwnerMemory, PINNED_MEMORY_MAX_CHARS } from "./memory/pinned.js";
+export { tidyMemoryFile, type TidyMemoryResult } from "./memory/tidy.js";
 export type { AddMemoryInput, MemoryCategory, MemoryEntry, MemoryStoreStatus, RecallInput, RecallResult, CanonicalMemoryInput } from "./memory/types.js";
 export { memoryEntryToCanonical } from "./memory/types.js";
 export { onLifecycle, emitLifecycle, type LifecycleEvent, type DreamPhase } from "./lifecycle/bus.js";
@@ -37,7 +38,8 @@ export {
   type PeriodicConsolidationSkip,
 } from "./reflection/periodicConsolidation.js";
 export { markTurnStarted, markTurnEnded, isAnyTurnActive, resetTurnActivity } from "./reflection/turnActivity.js";
-export { runLightDream, runDeepDream, runRemDream, type DreamResult } from "./dreaming.js";
+export { runLightDream, runDeepDream, runRemDream, dreamStagingFile, lastDiaryReport, type DreamResult, type DreamModel } from "./dreaming.js";
+export { runSelfFileRefresh, findContradictions, selfRefreshEveryDays, selfRefreshMarker, proposalPathFor, selfFileRewritePrompt, SELF_FILE_REWRITE_SYSTEM, type SelfFileName, type SelfFileRewriter, type SelfFileProposal, type SelfRefreshResult } from "./selfRefresh.js";
 export { recallForTurn, type RecallOptions } from "./recall.js";
 export {
   unifiedRecallForTurn,

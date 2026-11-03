@@ -4,6 +4,7 @@ import { notice } from "../terminalUi.js";
 import { runCrucibleTrials, type Goal, type CapabilityNode } from "@ares/operator";
 import { diagnoseMemory, MemoryRouter, MemoryStore, withConsolidationLock, type MemoryKind, type MemoryOverviewRow } from "@ares/mind";
 import { ParsedArgs, cliRuntimeContext } from "./runtime.js";
+import { tidyMemoryFile } from "@ares/agent";
 
 function glyphFor(action: "promoted" | "archived" | "demoted" | "held"): string {
   return action === "promoted" ? "+" : action === "archived" ? "x" : action === "demoted" ? "v" : "~";
@@ -14,8 +15,31 @@ export async function mindCommand(args: ParsedArgs): Promise<number> {
   const context = cliRuntimeContext({ home: args.flags.get("home") ?? process.env.ARES_HOME });
   const home = context.home;
   const memoryFile = args.flags.get("root") ?? context.mind.memoryFile;
-  const store = await MemoryStore.open(memoryFile);
   const json = args.flags.has("json");
+
+  if (subcommand === "tidy") {
+    // MEMORY.md, not the living store: collapse duplicate entries and move raw
+    // "User asked:" quotes to the daily log. --dry-run only reports.
+    const result = await tidyMemoryFile({ home, dryRun: args.flags.has("dry-run") });
+    if (json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      return 0;
+    }
+    if (!result.found) {
+      process.stdout.write(notice("Mind · tidy", [`no MEMORY.md at ${result.memoryFile}`], "warn"));
+      return 0;
+    }
+    const summary = `${result.kept} fact(s) kept · ${result.deduped} duplicate(s) folded · ${result.movedQuotes} chat quote(s) ${result.dryRun ? "would move" : "moved"} to the daily log`;
+    const lines = !result.changed
+      ? ["MEMORY.md is already tidy."]
+      : result.dryRun
+        ? [summary, "dry run — nothing written. Run without --dry-run to apply."]
+        : [summary, `backup: ${result.backup}`, ...(result.dailyLog ? [`quotes: ${result.dailyLog}`] : [])];
+    process.stdout.write(notice("Mind · tidy", lines, "success"));
+    return 0;
+  }
+
+  const store = await MemoryStore.open(memoryFile);
 
   if (subcommand === "add") {
     const content = args.flags.get("content") ?? args.positionals.slice(1).join(" ").trim();

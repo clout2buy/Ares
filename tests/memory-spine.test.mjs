@@ -135,7 +135,8 @@ test("spine: mergeDurableFacts routes through the spine with identical results",
   assert.match(res.addedFacts[0], /Jamara/);
   const added = store.nodes[store.nodes.length - 1];
   assert.equal(added.kind, "semantic");
-  assert.deepEqual(added.tags, ["reflected", "conversation", "relationship"]);
+  // + the curated type the deep dream renders MEMORY.md from (relationship → user).
+  assert.deepEqual(added.tags, ["reflected", "conversation", "relationship", "type:user"]);
   assert.equal(added.source, "conversation-reflection");
   assert.equal(added.strength, 3, "importance→strength mapping unchanged");
 });

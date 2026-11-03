@@ -12,9 +12,13 @@
 // everything here is pure + testable: build the digest, dedup, write.
 
 import { MemoryRouter, type RouterStoreLike } from "./router.js";
+import { curatedTypeOf, isRawQuote } from "./curated.js";
 import type { ReflectionResult, ReflectionSurface } from "./types.js";
 
-export type DurableFactKind = "preference" | "fact" | "decision" | "relationship" | "skill";
+/** The four curated types (user / feedback / project / reference) — what
+ *  MEMORY.md is made of — plus the distiller's older labels, still accepted
+ *  and mapped by curatedTypeOf. */
+export type DurableFactKind = "user" | "feedback" | "project" | "reference" | "preference" | "fact" | "decision" | "relationship" | "skill";
 
 export interface DurableFact {
   /** A single, self-contained, durably-true statement. */
@@ -22,21 +26,25 @@ export interface DurableFact {
   kind: DurableFactKind;
   /** 0..1 — how worth-remembering this is. Below the floor we drop it. */
   importance: number;
+  /** Why it matters: the owner's reason, or the mistake it prevents. */
+  why?: string;
 }
 
 /** The system prompt for the distiller. Kept stable so the side-call shares the
  *  parent's cached prefix economics. */
 export const CONVERSATION_REFLECT_SYSTEM =
   "You are Ares's memory distiller. From a conversation, extract ONLY durable facts " +
-  "worth remembering for months: the owner's stable preferences, personal facts, " +
-  "standing decisions, relationships, and hard-won knowledge. " +
+  "worth remembering for months, each typed: user (who the owner is, their preferences, " +
+  "people, machines), feedback (a standing rule or correction about how to work), project " +
+  "(a decision or state of ongoing work), reference (where something lives, how to reach it). " +
   "IGNORE the ephemeral — greetings, one-off questions, transient task state, anything " +
   "already obvious. Each fact must be a single self-contained sentence that stays true " +
-  "out of context (write the owner's name/subject explicitly, never 'he'/'it'). " +
+  "out of context (write the owner's name/subject explicitly, never 'he'/'it'), in your own " +
+  "words — NEVER a quote of what the owner typed. Give a short why for each. " +
   "Return an empty array if nothing is durable. Be ruthless: 0-5 facts, never filler.";
 
 export const DURABLE_FACTS_SCHEMA_HINT =
-  '[{"content": "<one durable sentence>", "kind": "preference|fact|decision|relationship|skill", "importance": 0.0-1.0}]';
+  '[{"content": "<one durable sentence>", "kind": "user|feedback|project|reference", "why": "<why it matters>", "importance": 0.0-1.0}]';
 
 /** Collapse session-replay/tool noise into a compact role-tagged transcript the
  *  distiller can read, newest-last, bounded by char budget. */
@@ -87,12 +95,21 @@ export async function mergeDurableFacts(
   opts: { minImportance?: number } = {},
 ): Promise<MergeFactsResult> {
   const router = new MemoryRouter(store as RouterStoreLike);
+  // A quote of the owner is a log line, not a fact (MEMORY.md field report,
+  // 2026-11-02) — refused here even when a weak model returns one.
+  const typed = facts.filter((fact) => !isRawQuote(fact.content ?? ""));
   const report = await router.write(
     "conversation",
-    facts.map((fact) => ({
+    typed.map((fact) => ({
       kind: "semantic" as const,
       content: (fact.content ?? "").trim(),
-      tags: ["reflected", "conversation", fact.kind],
+      tags: [
+        "reflected",
+        "conversation",
+        fact.kind,
+        `type:${curatedTypeOf(fact.kind)}`,
+        ...(typeof fact.why === "string" && fact.why.trim() ? [`why:${fact.why.replace(/\s+/g, " ").trim().slice(0, 240)}`] : []),
+      ],
       source: "conversation-reflection",
       strength: Math.max(1, Math.round((fact.importance ?? 0.5) * 3)),
       salience: fact.importance ?? 0,
@@ -101,7 +118,7 @@ export async function mergeDurableFacts(
   );
   return {
     added: report.written.length,
-    skipped: report.skipped.length,
+    skipped: report.skipped.length + (facts.length - typed.length),
     addedFacts: report.written.map((w) => w.input.content),
   };
 }

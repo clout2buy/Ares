@@ -40,6 +40,22 @@ export {
 } from "./memory/router.js";
 export { withConsolidationLock, withFileLock, type ConsolidationLockOptions, type FileLockOptions } from "./memory/consolidationLock.js";
 export { isOperationalNoise } from "./memory/noise.js";
+export {
+  CURATED_TYPES,
+  CURATED_MEMORY_HEADER,
+  curatedTypeOf,
+  isRawQuote,
+  factSignature,
+  mergeCuratedFacts,
+  renderCuratedLine,
+  renderCuratedMemory,
+  parseCuratedMemory,
+  tidyCuratedMemory,
+  type CuratedType,
+  type CuratedFact,
+  type MergeCuratedResult,
+  type TidyReport,
+} from "./memory/curated.js";
 export { diagnoseMemory, type MemoryDoctorReport, type DuplicateMemoryGroup } from "./memory/doctor.js";
 export { recall, type RecallResult, type RecallOptions, type RecallVectors } from "./memory/recall.js";
 export {

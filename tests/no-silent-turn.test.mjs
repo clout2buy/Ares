@@ -254,5 +254,12 @@ test("daemon: a turn that dies with no reply always ends with one plain reason",
   const r2 = reasonsFor("sess_usage");
   assert.equal(r2.length, 1, JSON.stringify(r2));
   assert.match(r2[0].text, /^No brain could answer: .*says your plan's extra usage is out/);
+
+  // A model that "completes" with no text and no tool call, through the nudge:
+  // before, the chat showed only "Delivered".
+  send({ type: "send", goal: "__mock_empty_reply__", sessionId: "sess_empty" });
+  assert.ok(await waitFor((e) => e.type === "turn_settled" && e.sessionId === "sess_empty"), "the empty turn settled");
+  const empty = events().filter((e) => e.sessionId === "sess_empty" && e.type === "system_reminder_injected" && /finished without writing anything back/.test(e.text ?? ""));
+  assert.equal(empty.length, 1, `one plain line for an empty reply: ${trail("sess_empty")}`);
   assert.ok(existsSync(home));
 });

@@ -44,6 +44,18 @@ export class MockEchoProvider implements Provider {
       };
       return;
     }
+    // Stays empty through the engine's nudge too (any turn of a conversation
+    // that carries the trigger).
+    if (req.messages.some((m) => m.role === "user" && messageText(m).includes("__mock_empty_reply__"))) {
+      // A model that ends its turn having said and done nothing (end_turn, 0 output).
+      yield {
+        type: "message_done",
+        message: { id: `mock_empty_${Date.now()}`, role: "assistant", content: [], createdAt: new Date().toISOString() },
+        usage: { inputTokens: 10, outputTokens: 0 },
+        stopReason: "end_turn",
+      };
+      return;
+    }
     if (inputText.includes("__mock_bad_request__")) {
       // A 400 the failover ladder does not treat as a provider death.
       yield {

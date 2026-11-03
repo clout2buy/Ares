@@ -5849,6 +5849,24 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
               ),
             });
           }
+          // The other half of the guarantee: a turn the model "completed" with no
+          // text and no tool call at all (live test 2026-11-03: Opus returned
+          // end_turn with 0 output tokens, twice, through the engine's one nudge,
+          // and the chat just showed "Delivered"). Say so in one line.
+          if (
+            turnState.status === "completed" &&
+            !turnProducedOutput &&
+            !ownerToldWhy &&
+            !ownerCancellationPending() &&
+            !entry.zombieTurnInputIds?.has(inputId)
+          ) {
+            ownerToldWhy = true;
+            tagEmit(sid, {
+              type: "system_reminder_injected",
+              source: "instructions",
+              text: `${entry.live.selection.model} finished without writing anything back (it returned an empty reply twice). Send the message again, rephrase it, or pick another model under the input bar.`,
+            });
+          }
           // A turn that completed on a family is the proof it is back.
           if (turnState.status === "completed") deadReasons.delete(providerFamilyForSelection(entry.live.selection));
           // Post-turn settling (verifier/journal/memory). On a CANCELLED turn

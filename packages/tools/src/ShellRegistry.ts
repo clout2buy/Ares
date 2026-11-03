@@ -901,7 +901,9 @@ export class ShellRegistry {
     extra: Record<string, JsonValue> = {},
     opts: { completion?: boolean } = {},
   ): BackgroundJobRecord {
-    const tail = isAdoptedJob(job) ? "" : readTail(job.outputPath, 16_000);
+    // Read wide, then fold progress bars: a model download or weight load writes
+    // hundreds of near-identical tqdm lines that otherwise fill the whole tail.
+    const tail = isAdoptedJob(job) ? "" : collapseProgressLines(readTail(job.outputPath, 64_000)).slice(-16_000);
     const text = [
       `[background shell ${job.id} ${status}${exitCode === null ? "" : ` (exit ${exitCode})`}]`,
       tail ? `Latest output:\n${tail}` : "No output was captured.",
@@ -1089,6 +1091,31 @@ function completeUtf8Prefix(buffer: Buffer): number {
     }
   }
   return buffer.length;
+}
+
+/** Keep only the LAST line of each run of progress-bar updates (tqdm / pip /
+ *  curl style: "Loading weights:  97%|####| 401/415 [...]") and drop exact
+ *  repeats, so a job's tail shows what happened instead of 200 redraws. A run
+ *  is consecutive progress lines with the same label before the percentage. */
+export function collapseProgressLines(text: string): string {
+  const lines = text.split(/\r\n|\n|\r/);
+  const progress = /^(.*?)\s*\d{1,3}(?:\.\d+)?%\s*\|/;
+  const out: string[] = [];
+  let runLabel: string | null = null;
+  for (const line of lines) {
+    const m = progress.exec(line);
+    if (m) {
+      const label = m[1].replace(/^\[\w+\]\s*/, "").trim();
+      if (runLabel !== null && label === runLabel && out.length) out[out.length - 1] = line;
+      else out.push(line);
+      runLabel = label;
+      continue;
+    }
+    runLabel = null;
+    if (out.length && out[out.length - 1] === line && line.trim()) continue;
+    out.push(line);
+  }
+  return out.join("\n");
 }
 
 function readTail(filename: string | null, maxBytes: number): string {

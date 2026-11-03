@@ -1421,3 +1421,19 @@
 }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateAllow { background: var(--g-orange); color: #fff; }
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .gateDecided { color: var(--faint); }
+
+/* Background command finished: a quiet centered line, output folded away. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .jobNotice {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--line);
+}
+.shellNotice { border-radius: 14px; max-width: min(640px, 86%); }
+.shellNotice > summary { cursor: pointer; list-style: none; text-align: center; }
+.shellNotice > summary::-webkit-details-marker { display: none; }
+.shellNotice[data-ok="0"] > summary { color: var(--crimson, #b4483f); }
+.shellNoticeBody {
+  margin: 8px 0 2px; max-height: 260px; overflow: auto;
+  font: 11px/1.45 var(--mono, ui-monospace, monospace); white-space: pre-wrap; word-break: break-word;
+  color: var(--text); text-align: left;
+}

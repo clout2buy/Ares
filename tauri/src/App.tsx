@@ -10413,6 +10413,21 @@ const ItemView = React.memo(function ItemView({
     // bubble that looks like the owner typed it.
     const job = item.text ? /^\(Scheduled job "([^"]{1,80})" — ([^.]{1,80})\./.exec(item.text) : null;
     if (job) return <div className="jobNotice">⏰ Scheduled job · {job[1]} · {job[2]}</div>;
+    // A background command finishing: the engine hands its tail to the model as
+    // an input, but the owner never typed it. One quiet line, output folded away
+    // (owner, 2026-11-03: a teal "you" bubble full of progress-bar spam).
+    const shell = item.text ? /^\[background shell \S+ (completed|failed|cancelled|orphaned)(?: \(exit (-?\d+)\))?\]/.exec(item.text) : null;
+    if (shell) {
+      const ok = shell[1] === "completed" && (shell[2] === undefined || shell[2] === "0");
+      const label = ok ? "A background command finished" : shell[1] === "cancelled" ? "A background command was stopped" : `A background command ${shell[1] === "orphaned" ? "was lost" : "failed"}${shell[2] && shell[2] !== "0" ? ` (exit ${shell[2]})` : ""}`;
+      const body = item.text.slice(shell[0].length).trim();
+      return (
+        <details className="jobNotice shellNotice" data-ok={ok ? "1" : "0"}>
+          <summary>{ok ? "✓" : "!"} {label}{body ? " · show output" : ""}</summary>
+          {body ? <pre className="shellNoticeBody">{body}</pre> : null}
+        </details>
+      );
+    }
     const texted = item.text ? parseAgentText(item.text) : null;
     if (texted) {
       // Another agent texting this one: a grey bubble on the left with the

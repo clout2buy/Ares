@@ -158,7 +158,7 @@ export interface NowProps {
   agentIdOf: (sessionId: string) => string;
   onOpenSession: (id: string) => void;
   onOpenRoom: (id: string) => void;
-  onPermission: (sessionId: string, id: string, decision: "allow" | "deny") => void;
+  onPermission: (sessionId: string, id: string, decision: "allow_once" | "deny") => void;
   onAsk: (text: string) => void;
   onNewAgent: () => void;
   onNewRoom: () => void;
@@ -208,7 +208,7 @@ export function NowView(p: NowProps) {
                 <p>{ask.reason}</p>
               </div>
               <div className="nowAskBtns">
-                <button className="nowAllow" onClick={() => p.onPermission(session.id, ask.id, "allow")}>Allow</button>
+                <button className="nowAllow" onClick={() => p.onPermission(session.id, ask.id, "allow_once")}>Allow</button>
                 <button className="nowDeny" onClick={() => p.onPermission(session.id, ask.id, "deny")}>Deny</button>
                 <button className="nowOpen" onClick={() => p.onOpenSession(session.id)}>Open</button>
               </div>

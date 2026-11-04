@@ -4376,6 +4376,7 @@ function App() {
     { label: "Connectors — the Directory", hint: "/mcp · connect tools & apps", run: () => { setDirectoryOpen(true); daemonCmd({ type: "mcp_list" }); } },
     { label: "Switch model", hint: `current: ${prefs.routingMode === "auto" ? "routing (auto)" : prefs.model}`, run: () => setModelPopOpen(true) },
     { label: "Routing — the war table", hint: "per-lane model assignments", run: () => setRoutingOpen(true) },
+    ...(active?.id ? [{ label: "Report a bug", hint: "/bug · send this chat to the Ares team", run: () => setReportOpen(true) }] : []),
     { label: "Engine: restart", hint: "restart the Ares engine (daemon)", run: () => { restartAttempts.current = 0; restartDaemon(); } },
     { label: "Engine: panel", hint: "engine status + live log", run: () => setGarrisonOpen(true) },
     ...sessions.map((s) => ({ label: `Jump: ${s.title}`, hint: "session", run: () => openSession(s.id) })),
@@ -5038,6 +5039,7 @@ function App() {
           onSearch={() => setPaletteOpen(true)}
           onForge={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "live" }))}
           onExport={active?.id ? () => void exportSessionLog() : undefined}
+          onReport={active?.id ? () => setReportOpen(true) : undefined}
           onSettings={() => setSettingsOpen(true)}
           onMinimize={() => { void getCurrentWindow().minimize().catch(() => null); }}
           onMaximize={() => void toggleMaximize()}

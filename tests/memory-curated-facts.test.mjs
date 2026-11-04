@@ -305,7 +305,7 @@ test("self-file refresh proposes a rewrite beside IDENTITY.md, never touches it,
   const rewrites = [];
   const later = await runSelfFileRefresh({
     home,
-    now: new Date("2026-11-10T12:00:00Z"),
+    now: new Date(Date.now() + 8 * 86_400_000), // the marker is the file's real mtime, so "a week later" must follow the real clock
     records,
     rewrite: async (input) => {
       rewrites.push(input);

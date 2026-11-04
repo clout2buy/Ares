@@ -1419,7 +1419,41 @@
   background: rgba(var(--g-acc-rgb), 0.12);
   color: var(--ember-text);
 }
-.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateAllow { background: var(--g-orange); color: #fff; }
+/* modern.css paints .gateAllow for the dark skin with !important, so the light
+   surface has to answer in kind. Without this, Yes read as a disabled button
+   (1.9:1) and "don't ask again" had no button shape at all (field report,
+   2026-11-03: "never gave me the option to say yes"). */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateAllow,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateAllow:hover {
+  background: var(--g-orange) !important;
+  border-color: transparent !important;
+  color: #fff !important;
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateAlways,
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateDeny {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--line-strong);
+  color: var(--text-hi);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions .gateDeny {
+  border-color: rgba(190, 40, 40, 0.45);
+  color: #b42323;
+}
+/* The Now screen's ask kept the dark panel from messages.css under dark text. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .nowAsk {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--line-strong);
+}
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .nowOpen {
+  background: rgba(20, 24, 34, 0.08);
+  color: var(--text-hi);
+}
+/* "Yes, and don't ask again" wraps on a narrow window: let the button grow with it. */
+.ares.ares.ares[data-style="modern"][data-surface="messages"] .gateActions button {
+  height: auto;
+  min-height: 32px;
+  line-height: 1.2;
+}
 .ares.ares.ares[data-style="modern"][data-surface="messages"] .gateDecided { color: var(--faint); }
 
 /* Background command finished: a quiet centered line, output folded away. */

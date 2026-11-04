@@ -56,7 +56,7 @@ export const MCP_CATALOG: McpCatalogEntry[] = [
   { id: "semgrep", name: "Semgrep", url: "https://mcp.semgrep.ai/mcp", auth: "oauth", transport: "http", category: "security", blurb: "Static analysis and security scanning of code.", keywords: ["semgrep", "sast", "security scan", "vulnerability"] },
   { id: "context7", name: "Context7", url: "https://mcp.context7.com/mcp", auth: "none", transport: "http", category: "docs", blurb: "Up-to-date library and framework documentation for code.", keywords: ["context7", "library docs", "api docs", "documentation"] },
   { id: "deepwiki", name: "DeepWiki", url: "https://mcp.deepwiki.com/mcp", auth: "none", transport: "http", category: "docs", blurb: "Ask questions about any public GitHub repository.", keywords: ["deepwiki", "repo docs", "explain repo"] },
-  { id: "jam", name: "Jam", url: "https://mcp.jam.dev/mcp", auth: "oauth", transport: "http", category: "dev", blurb: "Bug reports with console logs, network and repro steps.", keywords: ["jam", "bug report", "repro"] },
+  { id: "jam", name: "Jam", url: "https://mcp.jam.dev/mcp", auth: "oauth", transport: "http", category: "dev", blurb: "Bug reports with console logs, network and repro steps.", keywords: ["jam"] },
   // ── deploy & infra ──────────────────────────────────────────────────────
   // Vercel's DCR (https://api.vercel.com/login/oauth/register) is an ALLOWLIST: it accepts loopback redirects (http://localhost:<port>) and a few named clients and
   // answers invalid_redirect_uri for the garrison's https callback (probed 2026-09-30; docs: "only supports AI clients that have been reviewed and approved").

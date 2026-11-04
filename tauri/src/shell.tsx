@@ -12,7 +12,7 @@ import "./shell.css";
 
 export type IconName =
   | "chat" | "pulse" | "news" | "grid" | "devices" | "search" | "forge" | "settings"
-  | "minimize" | "maximize" | "close" | "at" | "plus" | "people" | "sidebar" | "download";
+  | "minimize" | "maximize" | "close" | "at" | "plus" | "people" | "sidebar" | "download" | "bug";
 
 const PATHS: Record<IconName, ReactNode> = {
   chat: <path d="M12 4c4.7 0 8.5 3.1 8.5 7s-3.8 7-8.5 7c-1 0-2-.1-2.9-.4L5 19.5l1.2-3.4C4.6 14.8 3.5 13 3.5 11c0-3.9 3.8-7 8.5-7Z" />,
@@ -30,6 +30,7 @@ const PATHS: Record<IconName, ReactNode> = {
   plus: <path d="M12 5v14M5 12h14" />,
   people: <><circle cx="9" cy="9" r="3.2" /><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6" /><circle cx="16.5" cy="8" r="2.6" /><path d="M15.4 13.6c2.4-.2 4.4 1.1 5.1 3.9" /></>,
   sidebar: <><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" /><path d="M9 4.5v15" /></>,
+  bug: <><path d="M12 9v9" /><rect x="7.5" y="8" width="9" height="11" rx="4.5" /><path d="M9 8a3 3 0 0 1 6 0M7.5 12H4M20 12h-3.5M7.5 16.5 5 18.5M16.5 16.5l2.5 2M8 9 5.5 6.5M16 9l2.5-2.5" /></>,
   download: <><path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5" /><path d="M4.5 16.5V18a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-1.5" /></>,
 };
 
@@ -54,6 +55,7 @@ export function MsgTitlebar({
   onSearch,
   onForge,
   onExport,
+  onReport,
   onSettings,
   onMinimize,
   onMaximize,
@@ -69,6 +71,8 @@ export function MsgTitlebar({
   onForge: () => void;
   /** Download this chat as a text file (chat + tool calls + errors); absent = no chat open. */
   onExport?: () => void;
+  /** Open the Report a bug dialog for this chat; absent = no chat open. */
+  onReport?: () => void;
   onSettings: () => void;
   onMinimize: () => void;
   onMaximize: () => void;
@@ -87,6 +91,7 @@ export function MsgTitlebar({
       <div className="msTools" onMouseDown={stop}>
         <button className="msTool" onClick={onSearch} title="Search and commands (Ctrl+K)" aria-label="Search"><Icon name="search" size={19} /></button>
         <button className="msTool" onClick={onExport} disabled={!onExport} title="Download this chat (chat + tool calls + errors) as a text file" aria-label="Download chat"><Icon name="download" size={19} /></button>
+        <button className="msTool" onClick={onReport} disabled={!onReport} title="Report a bug — send this chat to the Ares team" aria-label="Report a bug"><Icon name="bug" size={19} /></button>
         <button className="msTool" onClick={onSettings} title="Settings" aria-label="Settings"><Icon name="settings" size={19} /></button>
       </div>
       <button className="msForge" data-on={forgeOpen ? "1" : "0"} onMouseDown={stop} onClick={onForge} title={forgeOpen ? "Close the Forge" : "Open the Forge"} aria-label="Forge"><Icon name="forge" size={16} /></button>

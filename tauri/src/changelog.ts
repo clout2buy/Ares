@@ -40,6 +40,20 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.69.2",
+    date: "November 2026",
+    title: "Lighter, more private, more capable",
+    tagline: "Long jobs cost far less, memory forgets what no longer matters, bug reports leave your project out, and GenUI builds what you ask for.",
+    highlights: [
+      { icon: "⚡", title: "Long jobs cost less", blurb: "Ares tidies its working memory earlier and carries far less of it from step to step, so a long coding job no longer costs millions of tokens.", tag: "Faster" },
+      { icon: "🧠", title: "Memory that forgets", blurb: "Memory is tidied while you work instead of never, keeps the things about you, and lets old task chatter fade.", tag: "Fixed" },
+      { icon: "🔒", title: "Private bug reports", blurb: "A report shows what Ares did, not what your project is: keys, names, paths and your code are left out, and you see the whole report before you send it.", tag: "Safer" },
+      { icon: "🪄", title: "GenUI that asks first", blurb: "Ares asks where and how you want something before building it, puts websites in floating or separate windows, and lets you drag its panels around.", tag: "New" },
+      { icon: "🧩", title: "Plugins from anywhere", blurb: "Import a plugin from any file, folder or zip. What can run installs; code from other apps is kept for Ares to rebuild.", tag: "New" },
+      { icon: "🔘", title: "GenUI toggle fixed", blurb: "The switch now shows what the agent actually saved, so it can no longer say on while Ares stays locked.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.68.2",
     date: "November 2026",
     title: "Quiet background jobs",

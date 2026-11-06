@@ -23,6 +23,7 @@ export {
   type OverviewOptions,
   type MemoryEditResult,
   type MemoryLoadReport,
+  maxMemoryNodes,
 } from "./memory/store.js";
 export { textSimilarity, isLowSignalUtterance, normalizeUtterance } from "./memory/similarity.js";
 export {

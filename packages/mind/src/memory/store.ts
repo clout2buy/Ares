@@ -101,6 +101,11 @@ export function overviewLimit(): number {
 const OVERVIEW_CONTENT_CLIP = 200;
 
 const PRUNE_FLOOR = 0.05;
+/** How many memories a store keeps after sleep. ARES_MIND_MAX_NODES tunes it. */
+export function maxMemoryNodes(): number {
+  const raw = Number(process.env.ARES_MIND_MAX_NODES);
+  return Number.isFinite(raw) && raw >= 50 ? Math.floor(raw) : 600;
+}
 const EVIDENCE_CAP = 20;
 const MAX_MEMORY_CONTENT_CHARS = 2_000;
 /** Hard ceiling on how long remember() will wait for a cue embedding. */
@@ -798,6 +803,14 @@ export class MemoryStore {
         pruned++;
         continue;
       }
+      // Project state ("the owner is building X", "the build is broken at Y")
+      // is true for a while, then not. Unlike who the owner is or how they
+      // want things done, it fades like an episode once nothing recalls it.
+      if (node.kind === "semantic" && (node.tags ?? []).includes("type:project") && currentStrength(node, now) < PRUNE_FLOOR) {
+        this.deleteNode(node.id);
+        pruned++;
+        continue;
+      }
       if (isNoiseThemeSemantic(node)) {
         this.deleteNode(node.id);
         pruned++;
@@ -806,6 +819,21 @@ export class MemoryStore {
 
     // 2. Merge exact duplicates into one stronger node and redirect links.
     deduped += this.mergeDuplicateContent(now);
+    // 3. A store nobody ever slept kept everything it was ever told (field
+    // report 2026-11-06: "remembering things not necessary"). Past the cap the
+    // weakest go first; synthesized insight is spared, it is the distillate.
+    const maxNodes = maxMemoryNodes();
+    if (this.nodes.size > maxNodes) {
+      const weakest = this.all()
+        .filter((n) => n.source !== "synthesis")
+        .map((n) => ({ n, strength: currentStrength(n, now) }))
+        .sort((a, b) => a.strength - b.strength);
+      for (const { n } of weakest) {
+        if (this.nodes.size <= maxNodes) break;
+        this.deleteNode(n.id);
+        pruned++;
+      }
+    }
 
     // Theme promotion is GONE. Single-token "Recurring theme \"X\" observed
     // across N episodes" semantics carried no knowledge — just a token and a

@@ -37,8 +37,10 @@ export const CONVERSATION_REFLECT_SYSTEM =
   "worth remembering for months, each typed: user (who the owner is, their preferences, " +
   "people, machines), feedback (a standing rule or correction about how to work), project " +
   "(a decision or state of ongoing work), reference (where something lives, how to reach it). " +
-  "IGNORE the ephemeral — greetings, one-off questions, transient task state, anything " +
-  "already obvious. Each fact must be a single self-contained sentence that stays true " +
+  "IGNORE the ephemeral — greetings, one-off questions, transient task state, what was built or " +
+  "fixed today, which file was edited, which tool ran, anything already obvious. A fact is only " +
+  "durable if the owner would still want it known in a new conversation next month. " +
+  "Each fact must be a single self-contained sentence that stays true " +
   "out of context (write the owner's name/subject explicitly, never 'he'/'it'), in your own " +
   "words — NEVER a quote of what the owner typed. Give a short why for each. " +
   "Return an empty array if nothing is durable. Be ruthless: 0-5 facts, never filler.";

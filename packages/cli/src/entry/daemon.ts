@@ -1217,7 +1217,12 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // and write them to Living Memory once, deduped — so Ares learns from TALKING,
   // not just from commits, without ever re-reading the transcript. Token-smart:
   // a few short facts in, recalled compactly later. Best-effort; never blocks.
-  const REFLECT_EVERY = Math.max(1, Number(process.env.ARES_REFLECT_EVERY) || 3);
+  // Every 3 turns was a fact or four per pass, most of them task state that
+  // never mattered again: memory filled with what the owner was doing, not
+  // who they are. Fewer passes, and only what the distiller is sure about.
+  const REFLECT_EVERY = Math.max(1, Number(process.env.ARES_REFLECT_EVERY) || 6);
+  const REFLECT_MAX_FACTS = 3;
+  const REFLECT_MIN_IMPORTANCE = 0.6;
   const convReflectTurns = new Map<string, number>();
   const reflectConversationAfterTurn = async (entry: DaemonEntry, sid: string): Promise<void> => {
     if (process.env.ARES_REFLECT === "0") return;
@@ -1248,6 +1253,11 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       return; // distillation failed — nothing learned this pass, no harm
     }
     if (!Array.isArray(facts) || facts.length === 0) return;
+    facts = facts
+      .filter((f) => typeof (f as { importance?: unknown }).importance !== "number" || (f as { importance: number }).importance >= REFLECT_MIN_IMPORTANCE)
+      .sort((a, b) => ((b as { importance?: number }).importance ?? 0) - ((a as { importance?: number }).importance ?? 0))
+      .slice(0, REFLECT_MAX_FACTS);
+    if (facts.length === 0) return;
     try {
       const store = await MemoryStore.open(live.context.mind.memoryFile);
       const res = await mergeDurableFacts(store, facts);
@@ -1873,6 +1883,10 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       if (entry.activeToolIds.size === 0) entry.steeringPhase = "boundary";
     } else if (event.type === "compaction") {
       entry.steeringPhase = "boundary";
+      // The conversation just forgot its past; memory sleeps with it, so the
+      // store is pruned and deduped while a session is in use, not only when
+      // the daemon finally exits (which, on the desktop, is almost never).
+      void sleepMemoryAfterCompaction();
     } else if (event.type === "turn_end") {
       entry.steeringPhase = "settling";
     }
@@ -6351,4 +6365,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     rl.close();
   }
   return 0;
+}
+
+// ─── Memory sleeps when the conversation compacts ───────────────────────────
+// consolidate() used to run only when the daemon exited, which on the desktop
+// is almost never, so a store grew for months with every fact the distiller
+// ever added. Compaction is the moment the conversation itself forgets; the
+// store sleeps then too. Throttled, off the turn path, never fatal.
+let memorySleptAt = 0;
+const MEMORY_SLEEP_EVERY_MS = 10 * 60 * 1000;
+async function sleepMemoryAfterCompaction(): Promise<void> {
+  if (process.env.ARES_MEMORY_SLEEP === "0") return;
+  const now = Date.now();
+  if (now - memorySleptAt < MEMORY_SLEEP_EVERY_MS) return;
+  memorySleptAt = now;
+  await mindSessionEnded().catch(() => undefined);
 }

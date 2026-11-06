@@ -1,5 +1,6 @@
 // Extracted from entry.ts — engineTools.
 
+import { GENUI_TOOLS, genuiEnabled } from "@ares/tools";
 import { AresSubagentRunner, SubagentRegistry, isCoreToolName, loadInstructionReminders, openWorkspaceSessionKernel, type EngineTool, type SubagentTypeDef, type QueryEngineConfig, type SessionKernelStore, type ToolCallContext } from "@ares/core";
 import path from "node:path";
 import { getRemoteAgentServer, setRemoteAgentServer, DEFAULT_TOOLS, ReadTool, WriteTool, EditTool, ApplyPatchTool, GlobTool, GrepTool, DiffTool, BisectTool, CodebaseSearchTool, LspTool, PowerShellTool, BashTool, bashAvailable, adaptToolForEngine, buildTool, makeTodoWriteTool, makeTaskTool, makeTaskOutputTool, makeKillTaskTool, makeConductorTool, makeCodingBackendTool, makeWebFetchTool, makeWebSearchTool, makeImageSearchTool, makeBashOutputTool, makeKillShellTool, makeBackgroundTasksTool, makeEnterPlanModeTool, makeUpdatePlanDraftTool, makeExitPlanModeTool, makeAgentComputerTools, makeToolSearchTool, requireScheduleApproval, DeferredToolRegistry, TodoStore, ShellRegistry, type DeferredToolDescriptor, type RichToolContext, type FileReadStamp, type PathPermissionStore, type CommandPermissionStore, type PlanModeState } from "@ares/tools";
@@ -116,12 +117,46 @@ function childPromptComposer(runtime: AresRuntimeState, context: CliRuntimeConte
   };
 }
 
+/** What the daemon exposes to Introspect beyond the belt: the plugin kernel
+ *  roster and the friction telemetry. Set once at daemon boot; a CLI without a
+ *  daemon leaves them unset and Introspect says so. */
+const introspectProviders: { plugins?: () => { plugins: unknown[]; recentMaintenance: unknown[] }; friction?: (limit: number) => Promise<unknown[]> | unknown[] } = {};
+export function setIntrospectProviders(providers: typeof introspectProviders): void {
+  Object.assign(introspectProviders, providers);
+}
+
+/** Forged tools (forgedTools.ts) join every belt at build time and need the
+ *  belt's enrich + the live deferred catalog to mount later. Both are set
+ *  when the first belt is built; the daemon reads them after that. */
+const beltHooks: { enrich?: (base: ToolCallContext) => RichToolContext; catalog?: DeferredToolDescriptor[]; attach?: (belt: EngineTool[]) => void } = {};
+export function beltEnrich(): ((base: ToolCallContext) => RichToolContext) | undefined {
+  return beltHooks.enrich;
+}
+export function deferredCatalogHooks(): { add: (name: string, description: string) => void; remove: (name: string) => void } {
+  return {
+    add: (name, description) => {
+      const catalog = beltHooks.catalog;
+      if (!catalog || catalog.some((d) => d.name === name)) return;
+      catalog.push({ name, description: leadSentences(description, 220) });
+    },
+    remove: (name) => {
+      const catalog = beltHooks.catalog;
+      if (!catalog) return;
+      for (let i = catalog.length - 1; i >= 0; i--) if (catalog[i].name === name) catalog.splice(i, 1);
+    },
+  };
+}
+export function setBeltAttach(attach: (belt: EngineTool[]) => void): void {
+  beltHooks.attach = attach;
+}
+
 /** Per-session ToolSearch registries. Module-level so the engine can ask
  *  which deferred tools a session has loaded — the transcript used to be the
  *  only record, and compaction erased it. */
 const deferredRegistries = new Map<string, DeferredToolRegistry>();
 export function loadedDeferredToolNames(sessionId: string): readonly string[] {
-  return deferredRegistries.get(sessionId)?.loaded() ?? [];
+  const loaded = deferredRegistries.get(sessionId)?.loaded() ?? [];
+  return genuiEnabled() ? [...new Set([...loaded, ...GENUI_TOOLS])] : loaded;
 }
 
 export async function buildEngineTools(
@@ -202,6 +237,14 @@ export async function buildEngineTools(
     todoStore: stateResolver?.todoStoreFor(base.sessionId) ?? fallbackTodoStoreFor(base.sessionId),
     subModel: selection.subModel,
     deferredTools: deferredRegistryFor(base.sessionId),
+    // `all` is assigned below; Introspect reads it at call time, after the
+    // belt exists, and sees connector tools spliced in later too.
+    introspect: {
+      tools: () => all,
+      isCore: isCoreToolName,
+      plugins: introspectProviders.plugins,
+      friction: introspectProviders.friction,
+    },
   });
 
   // One generic adaptive-provider surface for every environment. The registry
@@ -513,6 +556,9 @@ export async function buildEngineTools(
   // precede the return) share the array by reference, so filling it in place
   // is what makes them see the catalog.
   deferredCatalog.push(...deferredToolDescriptors(all));
+  beltHooks.enrich = enrich;
+  beltHooks.catalog = deferredCatalog;
+  beltHooks.attach?.(all);
   return all;
 }
 

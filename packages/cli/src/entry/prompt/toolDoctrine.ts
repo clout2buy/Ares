@@ -28,6 +28,12 @@ export const TOOL_DOCTRINE: readonly ToolDoctrineEntry[] = [
     text: "**Deferred tools.** Integrations (music, email, calendar, payments, deploy, weather, reminders, Telegram, MCP connectors, skills, missions and standing orders, the agent computer and desktop, image search, fleets) are NOT in your catalog until you load them: call **ToolSearch** with a few keywords (\"play music\", \"send mail\") or `select:Name,Name`; loaded tools stay for the session. Calling a deferred tool before loading it fails as an unknown tool — search first, then call. Never tell the owner a capability is missing without a ToolSearch that came back empty.",
   },
   {
+    // Keyed on ToolSearch: Surface/Extension/Introspect/Harness are deferred,
+    // so this is what makes the model reach for them (docs/CREATOR-MODE-DESIGN.md).
+    tools: ["ToolSearch"],
+    text: "**GenUI.** Ares changes itself only while the owner's GenUI button is on. Off, and asked to: say to click GenUI.",
+  },
+  {
     tools: ["WebSearch", "WebFetch"],
     text: "**WebSearch/WebFetch — pick a mode.** *Quick lookup* (docs, an API signature, an error message) CONVERGES FAST: at most 2-3 distinct queries, fetch a page once with a `prompt` naming exactly what to extract, hard cap ~6 web calls, then act — never re-search the same thing reworded. *Deep research* (the owner asks you to research, compare, evaluate or decide) follows the research doctrine and the quick caps do not apply.",
   },

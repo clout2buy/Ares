@@ -170,6 +170,11 @@ export type Item =
   /** An agent's proposed new faces (Agents avatar_ideas): the owner taps one to make it live. */
   | { kind: "avatarIdeas"; key: string; agentId: string; options: Array<{ n: number; idea: string; path: string }> }
   | { kind: "diff"; key: string; files: string[]; diff: string; truncated: boolean }
+  /** A surface placed as a card under the reply that made it; the document
+   *  itself lives in the shell's surface map (keyed by name), not the item. */
+  | { kind: "surface"; key: string; name: string }
+  /** The greeting when the owner turns GenUI on. */
+  | { kind: "genui"; key: string; name: string }
   | { kind: "subagent"; key: string; id: string; name: string; description: string; status: "running" | "completed" | "failed" | "cancelled"; summary?: string };
 
 export interface SessionVm {

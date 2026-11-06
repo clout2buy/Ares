@@ -262,6 +262,8 @@ export async function runAnthropicLoginFlow(
     server.once("error", (error: NodeJS.ErrnoException) => {
       const hint = error.code === "EADDRINUSE"
         ? `Port ${CALLBACK_PORT} is already in use. Close another Claude/Crypt login and try again.`
+        : error.code === "EACCES"
+        ? `Windows has reserved port ${CALLBACK_PORT}, and Claude sign-in can only use that port. Restart the PC, or in an admin terminal run: net stop winnat, then net start winnat.`
         : `Could not start Claude auth callback on ${REDIRECT_URI}: ${error.message}`;
       finish(new Error(hint));
     });

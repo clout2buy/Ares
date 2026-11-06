@@ -108,6 +108,17 @@ function parseMutation(value: unknown): LivingSurfaceMutation | null {
   return null;
 }
 
+/** Parse a list of mutation rows (the Surface tool's `mutations` input) with
+ * the same rules the fenced envelope uses. */
+export function parseLivingSurfaceMutations(rows: unknown): { mutations: LivingSurfaceMutation[] } | { error: string } {
+  if (!Array.isArray(rows) || !rows.length) return { error: "mutations must be a non-empty array" };
+  if (rows.length > MAX_MUTATIONS) return { error: `mutations must hold at most ${MAX_MUTATIONS} operations` };
+  const mutations = rows.map(parseMutation);
+  const bad = mutations.findIndex((item) => item === null);
+  if (bad !== -1) return { error: `mutation ${bad + 1} is invalid (unknown op, missing field, bad target name, or over the size limit)` };
+  return { mutations: mutations as LivingSurfaceMutation[] };
+}
+
 export function parseLivingSurfaceEnvelope(text: string): LivingSurfaceParseResult {
   const payload = extractFencedPayload(text);
   if (!payload) return { error: `No \`\`\`${LIVING_SURFACE_FENCE}\` patch was found.` };

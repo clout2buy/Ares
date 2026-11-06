@@ -129,12 +129,26 @@ import { resolveLiveRoute } from "./liveRoute.js";
 import { backupChain, decidePinnedFailover, pinnedFailoverEnabled, type PinnedFailoverDecision } from "./pinnedFailover.js";
 import { describeRetirement } from "./providerCredentialGate.js";
 import { describeUsageDeath, isRetiringProviderDeath, isUsageDeath, noReplyNotice, providerDisplayName } from "./providerDeath.js";
-import { saveReportLocally, trimRolloutForReport } from "./daemon/report.js";
+import { buildReportBody, reportSummary, saveReportLocally, transcriptText, trimRolloutForReport, type ReportEnv } from "./daemon/report.js";
+import * as reportOs from "node:os";
+import { scrubRollout, scrubText, type ReportLevel, type ScrubIdentity } from "@ares/protocol";
+
+/** Session meta holds the workspace path and little else worth hiding. */
+function scrubValueForReport(value: unknown, identity: ScrubIdentity): unknown {
+  return JSON.parse(JSON.stringify(value ?? null), (_k, v) => (typeof v === "string" ? scrubText(v, identity) : v));
+}
 import { daemonSkillsList } from "./daemon/skills.js";
 import { daemonUsageStats } from "./daemon/usageStats.js";
 import { DaemonCommandRouter, type DaemonInputCommand } from "./daemon/protocol.js";
 import { mcpDirectorySnapshot } from "./daemon/mcp.js";
 import { LiveFeedHub, type LiveControl, type LiveInputEvent } from "./daemon/liveFeed.js";
+import { SurfaceWiring } from "./daemon/surfaces.js";
+import { readRecentFriction } from "./daemon/frictionRead.js";
+import { setIntrospectProviders, beltEnrich, deferredCatalogHooks, setBeltAttach } from "./engineTools.js";
+import { ForgedTools } from "./forgedTools.js";
+import { genuiBriefing, genuiEnabled, genuiNow, installBaseModules } from "@ares/tools";
+import type { EngineTool } from "@ares/core";
+import { runGatedTool } from "./daemon/surfaceFeeds.js";
 import { setForgeSink } from "./previewServer.js";
 
 const providerUsageCache = new Map<string, { at: number; usage: ProviderUsage | undefined; error: string | undefined }>();
@@ -534,6 +548,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   };
   // Names a chat by its topic once a turn ends — bound once rooms exist below.
   let autoTitle: ((sessionId: string) => void) | undefined;
+  let surfaceObserver: ((sessionId: string | undefined, obj: Record<string, unknown>) => void) | null = null;
   const tagEmit = (sessionId: string | undefined, rawObj: Record<string, unknown>): void => {
     // The plain-English line ("Running the tests") rides on the event itself,
     // so the phone and Telegram can show what the desktop shows without their
@@ -551,11 +566,29 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     // ring only needs to know one arrived, not keep the pixels.
     eventRing.record({ at: Date.now(), ...(typeof payload.image === "string" ? { ...payload, image: `<${payload.image.length} chars>` } : payload) });
     process.stdout.write(JSON.stringify(payload) + "\n");
+    if (surfaceObserver && sessionId) {
+      try { surfaceObserver(sessionId, obj); } catch { /* a feed must never break the wire */ }
+    }
   };
 
   // The Forge's live window onto an engine Ares drives (a Godot game left
   // running, an open editor) between turns — plus the owner's input into it.
   const liveFeed = new LiveFeedHub({ emit: (obj, sessionId) => tagEmit(sessionId, obj) });
+  // Surfaces (docs/CREATOR-MODE-DESIGN.md): the ledger's changes reach every
+  // screen through tagEmit; what the documents do comes back as commands.
+  const surfaceWiring = new SurfaceWiring({
+    emit: (sessionId, obj) => tagEmit(sessionId, obj),
+    deliver: (sessionId, goal, inputId) => commands.enqueue({ type: "send", goal, sessionId, inputId }),
+    home: live.context.home,
+    workspace: live.context.workspace,
+    toolsFor: (sessionId) => (sessionId ? sessions.get(sessionId)?.live.tools : live.tools) ?? live.tools,
+    requestPermission,
+  });
+  surfaceObserver = (sessionId, obj) => surfaceWiring.observe(sessionId, obj);
+  setIntrospectProviders({
+    plugins: () => ({ plugins: pluginHost.status(), recentMaintenance: maintenanceLedger()?.snapshot(30) ?? [] }),
+    friction: (limit: number) => readRecentFriction(live.context.home, limit),
+  });
   // The Forge sensor: a page Ares serves into the Forge reports its errors,
   // warnings and frame rate while the owner tests it. The HUD gets every
   // batch; the model gets a deduped reminder at its next boundary, so it
@@ -852,6 +885,41 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
   // Maintenance went first ON PURPOSE: no user-facing contract, so kernel
   // rough edges surface on a timer nobody is watching, not on the belt.
   const pluginHost = new PluginHost();
+  // Forged tools: extensions of kind `tool` mounted into every live belt
+  // through the plugin kernel (docs/CREATOR-MODE-DESIGN.md Layer 2).
+  const forgedTools = new ForgedTools({
+    host: pluginHost,
+    workspace: live.context.workspace,
+    home: live.context.home,
+    belts: () => [live.tools as EngineTool[], ...[...sessions.values()].map((entry) => entry.live.tools as EngineTool[])],
+    enrich: (base) => {
+      const enrich = beltEnrich();
+      if (!enrich) throw new Error("the belt is not built yet");
+      return enrich(base);
+    },
+    callTool: async (sessionId, tool, input) => {
+      const result = await runGatedTool({
+        sessionId,
+        tool,
+        input,
+        workspace: live.context.workspace,
+        tools: sessions.get(sessionId)?.live.tools ?? live.tools,
+        mode: "call",
+        requestPermission,
+        emit: (sid, obj) => tagEmit(sid, obj),
+      });
+      if (!result.ok) throw new Error(result.error ?? "call failed");
+      return result.output;
+    },
+    catalog: deferredCatalogHooks(),
+  });
+  setBeltAttach((belt) => forgedTools.attach(belt));
+  forgedTools.attach(live.tools as EngineTool[]);
+  void forgedTools.remountKept().catch(() => undefined);
+  // Modules a release promoted to base: each installs once per content hash.
+  for (const dir of [path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "base-modules"), path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "agent", "base-modules")]) {
+    void installBaseModules(dir, live.context.home).catch(() => undefined);
+  }
   const maintenanceLedger = (): MaintenanceLedger | undefined =>
     pluginHost.service<MaintenanceLedger>(MAINTENANCE_LEDGER_SERVICE);
 
@@ -3500,6 +3568,19 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
       // subagent work lives in the session kernel as kind:"task" jobs. Both
       // handlers are best-effort: a malformed manifest or a locked kernel DB
       // must never take the daemon down, so errors surface inside the reply.
+      if (
+        command.type === "genui_get" || command.type === "genui_set" || command.type === "surface_share"
+        || command.type === "ui_map" || command.type === "ui_seen" || command.type === "surface_store" || command.type === "shell_get" || command.type === "shell_reset" || command.type === "shell_rollback"
+        || command.type === "surfaces_list" || command.type === "surface_intent" || command.type === "surface_fault" || command.type === "surface_call"
+        || command.type === "surface_keep" || command.type === "surface_remove" || command.type === "surface_rollback" || command.type === "surface_place"
+      ) {
+        try {
+          await surfaceWiring.handle(command);
+        } catch (err) {
+          tagEmit(command.sessionId, { type: "daemon_error", error: `${command.type}: ${err instanceof Error ? err.message : String(err)}` });
+        }
+        continue;
+      }
       if (command.type === "plugins_list") {
         // Read-only window onto the plugin host: what is mounted, what is
         // pending and WHY (waitingOn), what failed with which error — plus the
@@ -3999,48 +4080,57 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
           .then((result) => process.stdout.write(JSON.stringify({ type: "custom_models", ...result }) + "\n"));
         continue;
       }
-      if (command.type === "bug_report") {
-        // Opt-in: the user pressed "Report bug". Ship the FULL raw rollout of a
-        // session to the owner's gateway so coding failures can be diagnosed —
-        // every tool call, its output, every error, and all generated code.
+      if (command.type === "bug_report" || command.type === "bug_report_preview" || command.type === "session_export") {
+        // Opt-in. What leaves is scrubbed at the level the owner chose and is
+        // shown to them first; the raw session never goes anywhere.
         const id = cleanCommandId(command.id);
+        const level: ReportLevel = command.level === "full" ? "full" : "private";
         if (!id) {
-          process.stdout.write(JSON.stringify({ type: "bug_report_result", ok: false, error: "no session to report" }) + "\n");
+          process.stdout.write(JSON.stringify({ type: command.type === "bug_report" ? "bug_report_result" : command.type === "bug_report_preview" ? "bug_report_preview" : "session_export_result", ok: false, error: "no session to report" }) + "\n");
           continue;
         }
         try {
-          const note = typeof command.note === "string" ? command.note.slice(0, 2000) : "";
+          const note = redactSecrets(typeof command.note === "string" ? command.note.slice(0, 2000) : "");
           const rollout = await loadSessionRollout(live.context.workspace, id);
           const brSettings = await loadUiSettings();
-          // Trim pathological bulk (base64 images, giant tool dumps) so even an
-          // extreme transcript stays serializable. Truncates any single
-          // oversized string; the diagnosis value is in the code + errors, not
-          // a multi-MB embedded screenshot. The COMPRESSED body is fitted to the
-          // gateway's limit separately, inside postAresGatewayReport — that is
-          // the number that decides whether the upload succeeds.
-          const events = trimRolloutForReport(rollout.entries);
+          const identity: ScrubIdentity = { home: reportOs.homedir(), workspace: live.context.workspace, aresHome: live.context.home, hostname: reportOs.hostname(), username: (() => { try { return reportOs.userInfo().username; } catch { return undefined; } })() };
+          const scrubbed = scrubRollout(rollout.entries, identity, level);
+          const env: ReportEnv = { appVersion: await cliVersion(), os: `${process.platform} ${process.arch}`, provider: rollout.meta.provider?.name ?? "", model: rollout.meta.provider?.model ?? "", genui: genuiEnabled(), level, removed: scrubbed.removed, note };
+          const summary = reportSummary(scrubbed.events, env);
+          if (command.type === "session_export") {
+            process.stdout.write(JSON.stringify({ type: "session_export_result", ok: true, id, text: `${summary}\n\n${"=".repeat(64)}\n${transcriptText(scrubbed.events)}` }) + "\n");
+            continue;
+          }
+          const events = trimRolloutForReport(scrubbed.events);
           const payload = {
             session_id: id,
             note,
-            model: rollout.meta.provider?.model ?? "",
-            app_version: await cliVersion(),
-            os: `${process.platform} ${process.arch}`,
+            level,
+            summary,
+            removed: scrubbed.removed,
+            model: env.model,
+            app_version: env.appVersion,
+            os: env.os,
             event_count: rollout.eventCount,
             tool_failures: rollout.toolFailures,
-            transcript: { meta: rollout.meta, events },
+            transcript: { meta: scrubValueForReport(rollout.meta, identity), events },
           };
+          if (command.type === "bug_report_preview") {
+            const { bytes } = buildReportBody(payload);
+            process.stdout.write(JSON.stringify({ type: "bug_report_preview", ok: true, id, level, summary, removed: scrubbed.removed, events: events.length, bytes }) + "\n");
+            continue;
+          }
           const result = await postAresGatewayReport(aresGatewayBase(brSettings), brSettings.aresGatewayToken, payload);
           if (!result.ok) {
-            // The upload failing (no account, network, gateway down) must not
-            // eat the report — the tester with the broken session is the whole
-            // audience of this feature. Degrade to a local file they can attach.
+            // The upload failing must not eat the report: the tester with the
+            // broken session is the whole audience. Degrade to a file to attach.
             const savedPath = await saveReportLocally(payload, id, live.context.workspace).catch(() => undefined);
             process.stdout.write(JSON.stringify({ type: "bug_report_result", ...result, savedPath }) + "\n");
           } else {
             process.stdout.write(JSON.stringify({ type: "bug_report_result", ...result }) + "\n");
           }
         } catch (err) {
-          process.stdout.write(JSON.stringify({ type: "bug_report_result", ok: false, error: err instanceof Error ? err.message : String(err) }) + "\n");
+          process.stdout.write(JSON.stringify({ type: command.type === "bug_report" ? "bug_report_result" : command.type === "bug_report_preview" ? "bug_report_preview" : "session_export_result", ok: false, error: err instanceof Error ? err.message : String(err) }) + "\n");
         }
         continue;
       }
@@ -4986,6 +5076,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
         // pending request is retired, visibly, so it cannot run later.
         emitStartupRecoveryDiscarded(entry, command.sessionId, entry.startupRecoveryOffer, "replaced by a new message");
       }
+      if (genuiEnabled()) entry.live.queueSystemReminder(genuiBriefing(await genuiNow().catch(() => ""), modelLikelyHasVision(entry.live.selection.model)), "hook", "genui");
       const canonicalInput = (await openWorkspaceSessionKernel(entry.live.context.workspace)).getInput(inputId);
       if (canonicalInput && canonicalInput.sessionId !== entry.live.session.meta.id) {
         tagEmit(command.sessionId, {
@@ -6229,6 +6320,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     autotickLoop?.stop();
     // Every maintenance timer dies with its plugin, in reverse mount order —
     // the raw setIntervals this replaced were never cleared at all.
+    surfaceWiring.dispose();
     await pluginHost.dispose().catch(() => undefined);
     uninstallCrashHandlers();
     commands.close();

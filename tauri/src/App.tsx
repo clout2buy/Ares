@@ -41,6 +41,20 @@ import { WhatsNew } from "./WhatsNew";
 import { WantedList, type MandatesVm } from "./WantedList";
 import { ForgeIntro } from "./ForgeIntro";
 import { LivingSurface } from "./LivingSurface";
+import { SurfacesContext, type SurfaceVm, type SurfacesApi } from "./surfaces/SurfacesContext";
+import { SurfaceCard } from "./surfaces/SurfaceCard";
+import { SurfacesRail } from "./surfaces/SurfacesRail";
+import { SurfacesPane } from "./surfaces/SurfacesPane";
+import { RootShell, type FloorApproval } from "./surfaces/RootShell";
+import { SlotHost } from "./surfaces/SlotHost";
+import { AnchoredSurfaces, FreeSurfaces, readUiMap, readUiStyles } from "./surfaces/AnchoredSurfaces";
+import { answerLook } from "./surfaces/look";
+import { wrapShellScript } from "./surfaces/shellScript";
+import { SurfaceWindow } from "./surfaces/SurfaceWindow";
+import { GenuiCard, GenuiFx } from "./surfaces/Genui";
+import { deliverSurfacePost, deliverSurfaceShare, forgetSurfacePosts, setSurfaceVisibility } from "./surfaces/postBus";
+import type { SurfaceDocument, SurfaceManifest } from "../../packages/protocol/src/surfaces";
+import { surfaceWebUrl } from "../../packages/protocol/src/surfaces";
 import { StyleCtx, SpringNumber, SpringHeight, TokenFlowStrip, pushTokenFlow, useNewStyle, useUiStyle } from "./newStyle";
 import { AresSigils, Medallion, Sigil, asSigilName } from "./modernIcons";
 import { CHANGELOG } from "./changelog";
@@ -149,6 +163,7 @@ import "./cyber.css";
 import "./forge.css";
 import "./messages.css";
 import "./glass.css";
+import "./surfaces/surfaces.css";
 import { FeedView, NowView } from "./messagesViews";
 import { ForgePixelPulse, ForgePixelReveal, ForgePixelRim, PixelIcon } from "./forgePixels";
 import { ForgeNativeView, forgeNativeTarget, forgeViewControl } from "./forgeNativeView";
@@ -157,7 +172,7 @@ import { ConnectorDirectory } from "./ConnectorDirectory";
 import { BUILTIN_POINT_MAPS, normalizePointMap, type PointMapSpec } from "./pointMaps";
 import { Tutorial, markTutorialSeen, tutorialSeen } from "./tutorial";
 import { SETUP_BRAIN, SETUP_SKIP_KEY, SetupChat, setupSkipped } from "./setup";
-import { MsgTabBar, MsgTitlebar, type MsgTab } from "./shell";
+import { MsgTabBar, MsgTitlebar, DEFAULT_NAV, type NavTab, type MsgTab } from "./shell";
 import { WorkspacesPane, type WorkspaceVm } from "./workspacesPane";
 import { IPhonePane, ProfilePane, ProfileSheet, ScheduledList, ScheduledPane, SharingPanel, type JobVm, type SharingVm } from "./aresMore";
 import { InviteCard, PeopleSheet, type DirectoryInviteVm, type DirectoryProfileVm, type DirectoryVm } from "./people";
@@ -215,7 +230,7 @@ const SANDBOX_SEED = `<!doctype html>
 </body>
 </html>`;
 
-type ForgeTab = "preview" | "sandbox" | "holo" | "live" | "background";
+type ForgeTab = "preview" | "sandbox" | "holo" | "live" | "background" | "surfaces";
 
 interface ForgeState {
   open: boolean;
@@ -1038,7 +1053,7 @@ function App() {
   // How many chunks we've spoken this turn — the first fires small (fast start),
   // the rest batch larger to cut provider round-trips (the delay lever).
   const spokenChunkCount = useRef(0);
-  const [view, setView] = useState<"chat" | "artifacts" | "helm" | "aresos" | "feed" | "now">("chat");
+  const [view, setView] = useState<"chat" | "artifacts" | "helm" | "aresos" | "feed" | "now" | "surfaces">("chat");
   // AresOS: devices connected through the remote-PC agent, and the pending
   // connect link. Populated by the daemon's remote_pcs / remote_pc_link events.
   const [remotePcs, setRemotePcs] = useState<RemotePcRow[]>([]);
@@ -1079,6 +1094,7 @@ function App() {
   // Bug report: opt-in upload of the full session transcript to the gateway.
   const [reportOpen, setReportOpen] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
+  const [reportPreview, setReportPreview] = useState<{ level: string; summary: string; removed: string[]; events: number; bytes: number } | { error: string } | null>(null);
   // Connector Directory (/mcp): remote MCP servers connected via OAuth.
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const [mcpConnectors, setMcpConnectors] = useState<McpConnectorVm[]>([]);
@@ -1199,8 +1215,26 @@ function App() {
   /** Serialize the current session (turns, tool calls, failures) + the Garrison
    *  log into a plain-text report and save it — so feedback is one click + a
    *  file attach. Captures everything that broke, not just the visible chat. */
+  const logLinesRef = useRef<string[]>([]);
+  logLinesRef.current = logLines;
+  const writeSessionLog = useCallback(async (content: string) => {
+    try {
+      const path = await invoke<string>("ares_export_log", { content });
+      pushLog(`[export] session log saved → ${path}`);
+      pushGatewayToast(`⤓ Session log saved to ${path} (scrubbed: no keys, names or paths)`);
+    } catch (err) {
+      pushGatewayToast(`Export failed: ${String(err)}`);
+    }
+  }, [pushLog, pushGatewayToast]);
   const exportSessionLog = useCallback(async () => {
     const s = active;
+    // The daemon builds it from the session on disk through the same scrub as
+    // a bug report, so a download is safe to paste anywhere. Without a daemon
+    // the old in-window builder below still works.
+    if (native && daemon === "running" && s?.id) {
+      daemonCmd({ type: "session_export", id: s.id, level: "full" });
+      return;
+    }
     const out: string[] = [];
     out.push(`ARES SESSION LOG`);
     out.push(`exported: ${new Date().toISOString()}`);
@@ -1357,11 +1391,120 @@ function App() {
 
   // Slash-command palette for the composer: typing "/" surfaces these, Enter
   // runs them. The composer stays dumb — it just renders and fires `run`.
+  // ─── Surfaces (docs/CREATOR-MODE-DESIGN.md) ─────────────────────────────
+  // The ledger as this desktop knows it, keyed by name. The daemon is the
+  // truth: every change arrives as a surface_* event (folded in
+  // handleShellEvent), and the owner's buttons go back as commands.
+  const [surfaces, setSurfaces] = useState<Record<string, SurfaceVm>>({});
+  const surfacesRef = useRef(surfaces);
+  surfacesRef.current = surfaces;
+  const [surfaceFocus, setSurfaceFocus] = useState<string | null>(null);
+  /** Open a `window` surface as its own OS window (reopened at boot). The dev
+   *  bridge has no native windows, so it opens a browser one instead. */
+  const openSurfaceWindow = useCallback((name: string, title: string, focus: boolean, frame?: SurfaceManifest["frame"], html?: string) => {
+    const web = surfaceWebUrl(html ?? surfacesRef.current[name]?.document.html ?? "");
+    void invoke("ares_surface_window_open", { name, title, focus, frame: frame?.window ?? null, url: web }).catch(() => {
+      const bridge = new URLSearchParams(location.search).get("bridge");
+      if (bridge) window.open(`${location.pathname}?surfaceWindow=${name}&bridge=${encodeURIComponent(bridge)}`, `surface-${name}`, "width=560,height=680");
+    });
+  }, []);
+  // The reshaped window (Shell tool): hidden regions, added tabs, live CSS.
+  const [shellLayout, setShellLayout] = useState<{ hide: string[]; tabs: Array<{ id: string; label: string; surface: string }>; nav: Array<{ id: string; label?: string; icon?: string; tone?: string; surface?: string; menu?: string[] }>; css: string; vars: Record<string, string> }>({ hide: [], tabs: [], nav: [], css: "", vars: {} });
+  const shellScriptRef = useRef("");
+  const shellScriptTimer = useRef<number | null>(null);
+  const [genui, setGenui] = useState(false);
+  const [genuiFx, setGenuiFx] = useState<"on" | "off" | null>(null);
+  const genuiFxTimer = useRef<number | null>(null);
+  const [navMenu, setNavMenu] = useState<{ id: string; top: number; left: number } | null>(null);
+  // The left strip as the layout composed it: built-ins by id, surfaces by name.
+  const navTabs = useMemo<NavTab[]>(() => {
+    const base = shellLayout.nav.length
+      ? shellLayout.nav.flatMap((n): NavTab[] => {
+          const builtin = DEFAULT_NAV.find((t) => t.id === n.id);
+          if (!builtin && !n.surface && !n.menu) return [];
+          return [{ id: n.id, label: n.label || builtin?.label || n.id, icon: (n.icon as NavTab["icon"]) || builtin?.icon || "grid", tone: n.tone || builtin?.tone || "#7aa2ff", ...(n.surface ? { surface: n.surface } : {}), ...(n.menu ? { menu: n.menu } : {}) }];
+        })
+      : [...DEFAULT_NAV];
+    return [...base, ...shellLayout.tabs.filter((t) => !base.some((b) => b.id === t.id)).map((t): NavTab => ({ id: t.id, label: t.label, icon: "grid", tone: "#7aa2ff", surface: t.surface }))];
+  }, [shellLayout.nav, shellLayout.tabs]);
+  useEffect(() => {
+    const id = "ares-shell-layout";
+    let el = document.getElementById(id) as HTMLStyleElement | null;
+    if (!el) {
+      el = document.createElement("style");
+      el.id = id;
+      document.head.appendChild(el);
+    }
+    el.textContent = shellLayout.css;
+  }, [shellLayout.css]);
+  const openSurface = useCallback((name: string) => {
+    const vm = surfacesRef.current[name];
+    if (!vm) return;
+    // A floating panel or a window has no pane to go to: it opens where it lives.
+    if (vm.manifest.placement === "window") { openSurfaceWindow(name, vm.manifest.title, true, vm.manifest.frame); return; }
+    if (/^(free|at:)/.test(vm.manifest.placement)) { setSurfaceVisibility(name, "show"); return; }
+    setSurfaceFocus(name);
+    if (vm.manifest.placement === "rail") setForge((f) => ({ ...f, open: true, tab: "surfaces" }));
+    else if (vm.manifest.placement !== "card") setView("surfaces");
+  }, []);
+  const sayRef = useRef<((text: string) => unknown) | null>(null);
+  const agentNameRef = useRef("Ares");
+  const genuiAsked = useRef<boolean | null>(null);
+  const toggleGenui = useCallback(() => {
+    const next = !genui;
+    if (native && daemon !== "running") {
+      pushGatewayToast("GenUI needs the agent running. Start it and try again.");
+      return;
+    }
+    genuiAsked.current = next;
+    daemonCmd({ type: "genui_set", enabled: next });
+    if (!native) setGenui(next);
+  }, [genui, native, daemon, daemonCmd, pushGatewayToast]);
+  // What the daemon saved. A click shows its result here, not before.
+  const onGenuiState = useCallback((enabled: boolean, error?: string) => {
+    setGenui(enabled);
+    if (error) pushGatewayToast(error);
+    const asked = genuiAsked.current;
+    genuiAsked.current = null;
+    if (asked === null || asked !== enabled) return;
+    setGenuiFx(enabled ? "on" : "off");
+    if (genuiFxTimer.current) window.clearTimeout(genuiFxTimer.current);
+    genuiFxTimer.current = window.setTimeout(() => setGenuiFx(null), enabled ? 2100 : 1100);
+    const sid = activeRef.current;
+    if (enabled && sid) {
+      applyTo(sid, (sess) => ({ ...sess, items: [...sess.items, { kind: "genui" as const, key: `genui_${Date.now()}`, name: agentNameRef.current }] }));
+    }
+  }, [applyTo, pushGatewayToast]);
+  const onGenuiStateRef = useRef(onGenuiState);
+  onGenuiStateRef.current = onGenuiState;
+  const surfacesApi = useMemo<SurfacesApi>(() => ({
+    surfaces,
+    intent: (name, text) => {
+      const vm = surfacesRef.current[name];
+      daemonCmd({ type: "surface_intent", surface: name, text, sessionId: vm?.manifest.sessionId || activeRef.current || undefined });
+    },
+    fault: (name, message) => {
+      setSurfaces((prev) => (prev[name] ? { ...prev, [name]: { ...prev[name], faults: [...prev[name].faults.slice(-4), message] } } : prev));
+      daemonCmd({ type: "surface_fault", surface: name, text: message });
+    },
+    call: (name, callId, tool, input) => daemonCmd({ type: "surface_call", surface: name, callId, tool, input }),
+    keep: (name) => daemonCmd({ type: "surface_keep", surface: name }),
+    remove: (name) => { forgetSurfacePosts(name); daemonCmd({ type: "surface_remove", surface: name }); },
+    rollback: (name, revision) => daemonCmd({ type: "surface_rollback", surface: name, revision }),
+    place: (name, placement) => daemonCmd({ type: "surface_place", surface: name, placement }),
+    say: (text) => { sayRef.current?.(text); },
+    open: openSurface,
+  }), [surfaces, daemonCmd, openSurface]);
+
   const slashActions = useMemo<SlashAction[]>(
     () => [
       { id: "mcp", icon: "🔌", label: "Connectors", hint: "Open the MCP explorer — connect, toggle & inspect tools", run: () => { setDirectoryOpen(true); daemonCmd({ type: "mcp_list" }); } },
       { id: "model", icon: "🧠", label: "Models", hint: "Open the model discovery panel", run: () => setModelPopOpen(true) },
       { id: "helm", icon: "🛡️", label: "HELM", hint: "Open the war room — missions, usage, autonomy", run: () => setView("helm") },
+      { id: "surface-windows-close", icon: "✕", label: "Close all surface windows", hint: "Everything Ares opened outside this window", run: () => { void invoke("ares_surface_windows_close").catch(() => null); } },
+      { id: "runtime-revert", icon: "⟲", label: "Use the shipped backend", hint: "Drop a backend Ares rebuilt for itself at the next start", run: () => { void invoke("ares_runtime_revert").catch(() => null); } },
+      { id: "shell-reset", icon: "↺", label: "Reset the shell", hint: "Undo every change Ares made to this window's layout", run: () => daemonCmd({ type: "shell_reset" }) },
+      { id: "surfaces", icon: "▦", label: "Surfaces", hint: "Open the panes Ares built — dashboards, trackers, games", run: () => setView("surfaces") },
       { id: "settings", icon: "⚙️", label: "Settings", hint: "Open settings", run: () => setSettingsOpen(true) },
       { id: "bug", icon: "🐛", label: "Report a bug", hint: "Send a bug report with this session's log", run: () => setReportOpen(true) },
       { id: "export", icon: "⤓", label: "Download chat", hint: "Save this session (chat + tool calls + errors) as a text file", run: () => void exportSessionLog() },
@@ -2220,6 +2363,138 @@ function App() {
         case "skills_list":
           setSkills(Array.isArray(e.skills) ? (e.skills as SkillInfo[]) : []);
           return true;
+        // ── Surfaces: the ledger's changes, forwarded by the daemon ──────
+        case "shell_layout": {
+          const l = e.layout as { hide?: string[]; tabs?: Array<{ id: string; label: string; surface: string }>; nav?: Array<{ id: string; label?: string; icon?: string; tone?: string; surface?: string; menu?: string[] }>; css?: string; vars?: Record<string, string>; script?: string } | undefined;
+          // A reload replays buffered events, old layouts included, so the
+          // script acts only on where the layouts settle, never on each one.
+          const script = l?.script ?? "";
+          if (shellScriptTimer.current) window.clearTimeout(shellScriptTimer.current);
+          shellScriptTimer.current = window.setTimeout(() => {
+            if (script === shellScriptRef.current) return;
+            shellScriptRef.current = script;
+            const code = wrapShellScript(script);
+            // The dev bridge answers unknown commands quietly, so it evals here.
+            if ((globalThis as { __ARES_DEV_BRIDGE__?: string }).__ARES_DEV_BRIDGE__) (0, eval)(code);
+            // A script that never ran has to be said out loud: the look report reads this,
+            // and the agent otherwise guesses at why nothing happened.
+            else void invoke("ares_shell_eval", { code }).catch((e) => { (window as { __aresShellFault?: string }).__aresShellFault = `the app could not run it: ${e}`; });
+          }, 600);
+          setShellLayout({ hide: l?.hide ?? [], tabs: l?.tabs ?? [], nav: l?.nav ?? [], css: l?.css ?? "", vars: l?.vars ?? {} });
+          return true;
+        }
+        case "genui_state":
+          onGenuiStateRef.current(e.enabled === true, typeof e.error === "string" ? e.error : undefined);
+          return true;
+        case "shell_go": {
+          const [where, arg] = String(e.target ?? "").split(/:(.*)/s);
+          if (where === "surface" && arg) openSurface(arg);
+          else if (where === "settings") { setSettingsOpen(arg !== "close"); if (arg && arg !== "close") setSettingsTab(arg as never); }
+          else if (where === "forge") setForge((f) => (arg === "close" ? { ...f, open: false } : { ...f, open: true, tab: (arg || f.tab) as ForgeTab }));
+          else if (where === "chat" || where === "now" || where === "feed") setView(where);
+          else if (where === "made") setView("artifacts");
+          else if (where === "devices") { setView("aresos"); daemonCmd({ type: "remote_pcs" }); }
+          return true;
+        }
+        case "surface_share":
+          deliverSurfaceShare(String(e.name ?? ""), String(e.topic ?? ""), e.payload);
+          return true;
+        case "surfaces_list": {
+          const rows = Array.isArray(e.surfaces) ? (e.surfaces as Array<{ manifest: SurfaceManifest; document: SurfaceDocument }>) : [];
+          setSurfaces(Object.fromEntries(rows.filter((r) => r?.manifest?.name).map((r) => [r.manifest.name, { manifest: r.manifest, document: r.document, faults: [] }])));
+          for (const r of rows) if (r?.manifest?.placement === "window" && r.manifest.frame?.hidden !== true) openSurfaceWindow(r.manifest.name, r.manifest.title, false, r.manifest.frame, r.document?.html);
+          // The ledger decides the window: a root surface placed from another
+          // screen (or before a reload) takes over here too; one that is gone
+          // or moved releases the shell.
+          const rootRow = rows.find((r) => r?.manifest?.placement === "root");
+          if (rootRow && prefsRef.current.rootSurface !== rootRow.manifest.name) {
+            const p: Prefs = { ...prefsRef.current, rootSurface: rootRow.manifest.name };
+            setPrefs(p);
+            savePrefs(p);
+          } else if (!rootRow && prefsRef.current.rootSurface) {
+            const p: Prefs = { ...prefsRef.current, rootSurface: undefined };
+            setPrefs(p);
+            savePrefs(p);
+          }
+          return true;
+        }
+        case "ui_look": {
+          void answerLook(String(e.id), surfacesRef.current, typeof (e as { surface?: unknown }).surface === "string" ? (e as unknown as { surface: string }).surface : undefined, (e as unknown as { act?: { selector: string; text?: string; key?: string } }).act, daemonCmd);
+          return true;
+        }
+        case "surface_revision": {
+          const manifest = e.manifest as SurfaceManifest | undefined;
+          const document = e.document as SurfaceDocument | undefined;
+          if (!manifest?.name || !document) return true;
+          const ops = Array.isArray(e.mutations) ? (e.mutations as Array<Record<string, unknown>>) : [];
+          const morphable = e.origin === "mutate" && ops.length > 0 && ops.every((op) => op.op !== "replace_document" && op.op !== "set_script");
+          setSurfaces((prev) => ({ ...prev, [manifest.name]: { manifest, document, faults: prev[manifest.name]?.faults ?? [], morph: morphable ? { revision: manifest.revision, ops } : null } }));
+          if (manifest.placement === "root" && prefsRef.current.rootSurface !== manifest.name) {
+            const p: Prefs = { ...prefsRef.current, rootSurface: manifest.name };
+            setPrefs(p);
+            savePrefs(p);
+          }
+          if (e.origin === "create") {
+            // Where it lands: a card joins the transcript of the chat that made
+            // it; a rail tab opens the Forge on Surfaces; a pane opens the pane.
+            if (manifest.placement === "root" || manifest.placement === "free" || manifest.placement.startsWith("at:") || manifest.placement.startsWith("slot:")) {
+              // already on screen where it was placed
+            } else if (manifest.placement === "window") {
+              openSurfaceWindow(manifest.name, manifest.title, true, manifest.frame);
+            } else if (manifest.placement === "card") {
+              const sid = e.sessionId ?? manifest.sessionId ?? activeRef.current;
+              if (sid) {
+                applyTo(sid, (sess) => sess.items.some((it) => it.kind === "surface" && it.name === manifest.name)
+                  ? sess
+                  : { ...sess, items: [...sess.items, { kind: "surface" as const, key: `surface_${Date.now()}_${manifest.name}`, name: manifest.name }] });
+              }
+            } else if (manifest.placement === "rail") {
+              setSurfaceFocus(manifest.name);
+              setForge((f) => ({ ...f, open: true, tab: "surfaces" }));
+            } else {
+              setSurfaceFocus(manifest.name);
+              setView("surfaces");
+            }
+          }
+          return true;
+        }
+        case "surface_post":
+          if (typeof e.name === "string") deliverSurfacePost(e.name, e.payload);
+          return true;
+        case "surface_notice": {
+          const sid = ownerOf(e as { sessionId?: string });
+          if (sid) applyTo(sid, (sess) => ({ ...sess, items: [...sess.items, { kind: "notice" as const, key: `surface_notice_${Date.now()}`, text: String(e.text ?? ""), tone: (e.tone === "bad" || e.tone === "warn" ? e.tone : "dim") }] }));
+          return true;
+        }
+        case "surface_manifest": {
+          const manifest = e.manifest as SurfaceManifest | undefined;
+          if (!manifest?.name) return true;
+          setSurfaces((prev) => (prev[manifest.name] ? { ...prev, [manifest.name]: { ...prev[manifest.name], manifest } } : prev));
+          if (manifest.placement === "window") openSurfaceWindow(manifest.name, manifest.title, true, manifest.frame);
+          if (manifest.placement === "root" && prefsRef.current.rootSurface !== manifest.name) {
+            const p: Prefs = { ...prefsRef.current, rootSurface: manifest.name };
+            setPrefs(p);
+            savePrefs(p);
+          } else if (manifest.placement !== "root" && prefsRef.current.rootSurface === manifest.name) {
+            const p: Prefs = { ...prefsRef.current, rootSurface: undefined };
+            setPrefs(p);
+            savePrefs(p);
+          }
+          return true;
+        }
+        case "surface_removed": {
+          const name = typeof e.name === "string" ? e.name : "";
+          if (name) {
+            forgetSurfacePosts(name);
+            setSurfaces((prev) => { const { [name]: _gone, ...rest } = prev; return rest; });
+            if (prefsRef.current.rootSurface === name) {
+              const p: Prefs = { ...prefsRef.current, rootSurface: undefined };
+              setPrefs(p);
+              savePrefs(p);
+            }
+          }
+          return true;
+        }
         case "plugins_list":
           setPluginsVm({
             plugins: Array.isArray(e.plugins) ? (e.plugins as PluginStatusVm[]) : [],
@@ -2448,6 +2723,20 @@ function App() {
           // A credit grant landed while the app is open — ember toast, live.
           const usd = typeof e.amount_usd === "number" ? `+$${e.amount_usd.toFixed(2)}` : "+credits";
           pushGatewayToast(`${usd} credits${e.reason ? ` — ${e.reason}` : ""}`);
+          return true;
+        }
+        case "bug_report_preview": {
+          {
+            const p = e as unknown as { ok?: boolean; level?: unknown; summary?: unknown; removed?: unknown; events?: unknown; bytes?: unknown; error?: unknown };
+            setReportPreview(p.ok ? { level: String(p.level), summary: String(p.summary ?? ""), removed: Array.isArray(p.removed) ? (p.removed as string[]) : [], events: Number(p.events ?? 0), bytes: Number(p.bytes ?? 0) } : { error: p.error ? stringify(p.error) : "could not build the preview" });
+          }
+          return true;
+        }
+        case "session_export_result": {
+          if (!e.ok) { pushGatewayToast(`Download failed: ${e.error ? stringify(e.error) : "unknown"}`); return true; }
+          // The garrison tail lives only here; it gets the same scrub for names and paths.
+          const tail = logLinesRef.current.map((line) => redactSecrets(line).replace(/((?:[A-Za-z]:)?[\\/](?:Users|home)[\\/])([^\\/\s"'<>|:]+)/g, "$1<user>")).join("\n");
+          void writeSessionLog(`${String(e.text ?? "")}\n\n${"=".repeat(64)}\nGARRISON LOG (last 240 lines, scrubbed):\n${tail}`);
           return true;
         }
         case "bug_report_result": {
@@ -3684,6 +3973,7 @@ function App() {
     return true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [native, daemon, applyTo]);
+  sayRef.current = send;
   // Conversation mode auto-sends the recognized transcript through the same path.
   sendRef.current = send;
 
@@ -4762,6 +5052,25 @@ function App() {
   // The working label counts up while the model has not said anything yet.
   // A 1 Hz tick, only while busy; the clock itself lives on the session.
   const [workingNow, setWorkingNow] = useState(() => Date.now());
+  // A turn waiting on an approval freezes until someone answers. The home screen
+  // shows no chat, so the card would sit unseen: the chat asking comes forward.
+  useEffect(() => {
+    if (activeId || view !== "chat") return;
+    const asking = sessions.find((s) => s.busy && s.items.some((it) => it.kind === "permission" && !it.decided));
+    if (asking) openSession(asking.id);
+  }, [activeId, view, sessions, openSession]);
+  // A refresh lands back in the chat you were in, not on the agent picker. GenUI
+  // reloads the page for a script change: an agent checking its work saw its own
+  // chat vanish and went on to "fix" that. sessionStorage is this window only, so
+  // a real launch still opens on the picker.
+  const reopened = useRef(false);
+  useEffect(() => {
+    if (activeId) sessionStorage.setItem("ares.activeChat", activeId);
+    if (reopened.current || activeId || !sessions.length) return;
+    const id = sessionStorage.getItem("ares.activeChat");
+    if (!id) { reopened.current = true; return; }
+    if (sessions.some((s) => s.id === id)) { reopened.current = true; openSession(id); }
+  }, [activeId, sessions, openSession]);
   const workingBusy = !!active?.busy;
   useEffect(() => {
     if (!workingBusy) return;
@@ -4833,6 +5142,58 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [prefs.voiceEnabled, activeBusy, convoMode, pill, wakeOn, activity, voice.speaking]);
 
+  useEffect(() => {
+    // Keep Ares's picture of the screen current so it can place things anywhere.
+    const timer = window.setTimeout(() => {
+      // What each surface really is on screen, so Ares can check its work
+      // without opening anything: size, or not visible, and script faults.
+      const frames = new Map(Array.from(document.querySelectorAll<HTMLIFrameElement>("iframe.surfaceFrame")).map((f) => {
+        const box = f.getBoundingClientRect();
+        return [f.title, `${Math.round(box.width)}x${Math.round(box.height)}`] as const;
+      }));
+      const open = Object.values(surfacesRef.current).map((s) => `${s.manifest.name} (${s.manifest.placement}, ${frames.get(s.document.title || s.manifest.name) ?? "not on screen"}${s.faults.length ? `, script fault: ${s.faults.at(-1)}` : ""})`);
+      const state = [`view ${view}`, settingsOpen ? "Settings open" : "", forge.open ? `Forge open on ${forge.tab}` : "Forge closed", activeAgent ? `chatting with ${activeAgent.name}` : "", `${glass} glass`, open.length ? `surfaces ${open.join(", ")}` : "no surfaces"].filter(Boolean).join(", ");
+      daemonCmd({ type: "ui_map", map: readUiMap(), input: { ...readUiStyles(), state } });
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [daemonCmd, view, settingsOpen, forge.open, forge.tab, active?.id, activeAgent, glass, surfaces, shellLayout]);
+  agentNameRef.current = activeAgent?.name ?? "Ares";
+  // Everything Ares built comes back the moment a daemon is up: at launch the
+  // daemon is not running yet when the window loads, so this waits for it
+  // instead of asking once at load and missing it.
+  useEffect(() => {
+    if (daemon !== "running") return;
+    for (const type of ["surfaces_list", "shell_get", "genui_get"]) {
+      void invoke("ares_daemon_command", { command: { type } }).catch(() => null);
+    }
+  }, [daemon]);
+  const slot = (id: string) => <SurfacesContext.Provider value={surfacesApi}><SlotHost slot={id} /></SurfacesContext.Provider>;
+  const rootVm = prefs.rootSurface ? surfaces[prefs.rootSurface] : undefined;
+  if (rootVm && rootVm.manifest.placement === "root") {
+    // Level 2: the window IS the document; the floor stays native above it.
+    const rootSid = rootVm.manifest.sessionId;
+    const approvals: FloorApproval[] = sessions.flatMap((s) => s.items
+      .filter((it): it is Extract<Item, { kind: "permission" }> => it.kind === "permission" && !it.decided)
+      .map((it) => ({ sessionId: s.id, id: it.id, toolName: it.toolName, reason: it.reason, submitting: it.submitting })));
+    const rootBusy = sessions.some((s) => (rootSid ? s.id === rootSid : true) && s.busy);
+    return (
+      <div className="ares" data-daemon={daemon} data-theme={prefs.theme} data-accent={prefs.accent} data-style={surfaceToStyle(prefs.surface)} data-surface={prefs.surface} data-root-surface="1">
+        <SurfacesContext.Provider value={surfacesApi}>
+          <RootShell
+            vm={rootVm}
+            approvals={approvals}
+            busy={rootBusy}
+            daemon={daemon}
+            onPermission={respondPermission}
+            onSend={(text) => daemonCmd({ type: "surface_intent", surface: rootVm.manifest.name, text, sessionId: rootSid || activeRef.current || undefined })}
+            onStop={() => daemonCmd({ type: "interrupt", sessionId: rootSid || activeRef.current || undefined })}
+            onStopEverything={() => { daemonCmd({ type: "operator_control", action: "halt", reason: "the floor's Stop everything button" }); if (rootSid) daemonCmd({ type: "interrupt", sessionId: rootSid }); }}
+            onRestore={() => { const p: Prefs = { ...prefsRef.current, rootSurface: undefined }; setPrefs(p); savePrefs(p); daemonCmd({ type: "surface_place", surface: rootVm.manifest.name, placement: "pane" }); }}
+          />
+        </SurfacesContext.Provider>
+      </div>
+    );
+  }
   return (
     <StyleCtx.Provider value={prefs.uiStyle}>
     <AgentPhotoContext.Provider value={agentPhotos}>
@@ -4848,6 +5209,11 @@ function App() {
       data-style={prefs.uiStyle}
       data-surface={prefs.surface}
       data-glass={glass}
+      data-hide={shellLayout.hide.join(" ")}
+      data-genui={genui ? "1" : "0"}
+      data-genui-fx={genuiFx ?? undefined}
+      data-side-left={Object.values(surfaces).some((s) => s.manifest.placement === "slot:side.left") ? "1" : undefined}
+      data-side-right={Object.values(surfaces).some((s) => s.manifest.placement === "slot:side.right") ? "1" : undefined}
       data-panel={forge.open ? "1" : "0"}
       data-rail={railCollapsed ? "collapsed" : "open"}
       data-dragging={forgeDragging ? "1" : "0"}
@@ -4855,6 +5221,7 @@ function App() {
       data-pill={pill ? "1" : "0"}
       data-ultra={prefs.ultra ? "1" : "0"}
       style={{
+        ...(shellLayout.vars as React.CSSProperties),
         ["--forge-w" as string]: `${forgeWidth}px`,
         ["--heat" as string]: heat.toFixed(3),
         ["--draft" as string]: draft.toFixed(3),
@@ -5037,6 +5404,8 @@ function App() {
           onDrag={dragWindow}
           onAccount={() => { setSettingsOpen(true); setSettingsTab("account"); }}
           onSearch={() => setPaletteOpen(true)}
+          genui={genui}
+          onGenui={toggleGenui}
           onForge={() => setForge((f) => ({ ...f, open: !f.open, tab: f.open ? f.tab : f.artifact ? "preview" : "live" }))}
           onExport={active?.id ? () => void exportSessionLog() : undefined}
           onReport={active?.id ? () => setReportOpen(true) : undefined}
@@ -5205,7 +5574,30 @@ function App() {
       </header>
       )}
 
+      <SurfacesContext.Provider value={surfacesApi}><AnchoredSurfaces /><FreeSurfaces /></SurfacesContext.Provider>
+      {genuiFx ? <GenuiFx phase={genuiFx} /> : null}
+      {slot("side.left")}
+      {slot("side.right")}
+      {/* The titlebar shrinks to the middle column beside side panels, so the
+          edge above each one stays a place to grab the window. */}
+      {Object.values(surfaces).some((s) => s.manifest.placement === "slot:side.left") ? <div className="sideDrag" data-side="left" onMouseDown={dragWindow} /> : null}
+      {Object.values(surfaces).some((s) => s.manifest.placement === "slot:side.right") ? <div className="sideDrag" data-side="right" onMouseDown={dragWindow} /> : null}
+      {navMenu ? (
+        <>
+          <div className="navMenuScrim" onClick={() => setNavMenu(null)} />
+          <div className="navMenu" style={{ top: navMenu.top, left: navMenu.left }} role="menu">
+            {(() => {
+              const list = navTabs.find((t) => t.id === navMenu.id)?.menu ?? [];
+              const rows = list.includes("*") ? Object.values(surfaces).filter((s) => !/^(slot|at):|^card$|^rail$/.test(s.manifest.placement)) : list.map((n) => surfaces[n]).filter(Boolean);
+              return rows.length ? rows.map((s) => (
+                <button key={s.manifest.name} role="menuitem" onClick={() => { setNavMenu(null); if (/^(free|window|at:)/.test(s.manifest.placement)) setSurfaceVisibility(s.manifest.name, "toggle"); else openSurface(s.manifest.name); }}>{s.manifest.title || s.manifest.name}</button>
+              )) : <span>Nothing here yet.</span>;
+            })()}
+          </div>
+        </>
+      ) : null}
       <aside className="rail">
+        {slot("rail.top")}
         <div className="railBrand" aria-hidden="true">ARES</div>
         <button className="railCollapse" onClick={toggleRail} title="Collapse navigation" aria-label="Collapse navigation">
           <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M11 4 6 9l5 5"/><path d="M15 3v12"/></svg>
@@ -5217,15 +5609,26 @@ function App() {
 
         {prefs.surface === "messages" ? (
           <MsgTabBar
-            active={(view === "chat" ? "chat" : view === "now" ? "now" : view === "feed" ? "feed" : view === "artifacts" ? "made" : view === "aresos" ? "devices" : null) as MsgTab | null}
+            tabs={navTabs}
+            active={view === "surfaces" ? (navTabs.find((t) => t.surface && t.surface === surfaceFocus)?.id ?? null) : (view === "chat" ? "chat" : view === "now" ? "now" : view === "feed" ? "feed" : view === "artifacts" ? "made" : view === "aresos" ? "devices" : null) as MsgTab | null}
             badges={{
               chat: (agentUnread.length + roomUnread.length + directory.inbox.length) || undefined,
               now: sessions.some((x) => x.items.some((it) => it.kind === "permission" && !it.decided)) ? "!" : undefined,
             }}
             live={{ now: sessions.some((x) => x.busy && !x.background) }}
-            onChange={(tab) => {
+            onChange={(tab, button) => {
+              const entry = navTabs.find((t) => t.id === tab);
+              if (entry?.menu) {
+                const box = button.getBoundingClientRect();
+                setNavMenu((m) => (m?.id === tab ? null : { id: tab, top: box.top, left: box.right + 8 }));
+                return;
+              }
+              const added = entry?.surface;
+              // A floating panel toggles where it is and leaves the view alone.
+              if (added && /^(free|window|at:)/.test(surfaces[added]?.manifest.placement ?? "")) { setSurfaceVisibility(added, "toggle"); return; }
               setForge((current) => ({ ...current, open: false }));
-              if (tab === "chat") setView("chat");
+              if (added) { setSurfaceFocus(added); setView("surfaces"); }
+              else if (tab === "chat") setView("chat");
               else if (tab === "now") setView("now");
               else if (tab === "feed") setView("feed");
               else if (tab === "made") setView("artifacts");
@@ -5257,6 +5660,13 @@ function App() {
           >
             <Medallion glyph="flame" /><i className="glyph" data-glyph="dot" /> Now
             {sessions.some((s) => s.items.some((it) => it.kind === "permission" && !it.decided)) ? <em>!</em> : null}
+          </button>
+          <button
+            title="Surfaces — the panes Ares built"
+            data-on={view === "surfaces" ? "1" : "0"}
+            onClick={() => { setView("surfaces"); setForge((current) => ({ ...current, open: false })); }}
+          >
+            <Medallion glyph="artifacts" /><i className="glyph" data-glyph="task" /> Surfaces
           </button>
           <button
             title="Feed"
@@ -5304,6 +5714,7 @@ function App() {
           </button>
         </nav>
         )}
+        {slot("rail.nav")}
 
         <input
           className="railSearch"
@@ -5473,14 +5884,16 @@ function App() {
             <span>{daemon === "running" ? "Garrison up" : daemon}</span>
           </div>
         </div>
+        {slot("rail.bottom")}
       </aside>
 
       <main className="stage" data-view={view}>
+        {slot("stage.top")}
         {railCollapsed ? (
           <AgentDock floating rows={agentRows} selectedId={selectedAgentId} onSelect={selectAgent} onNew={() => { setAgentError(undefined); setAgentEditor({ mode: "create" }); }} />
         ) : null}
         {/* No header over the "who do you want to text" picker: it belongs to no one, and showed the raw model id. */}
-        <header className="stageHead" data-busy={active?.busy ? "1" : "0"} data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || (view === "chat" && !activeAgent && !activeRoom && (active?.items.length ?? 0) === 0)}>
+        <header className="stageHead" data-busy={active?.busy ? "1" : "0"} data-imsg={activeAgent || prefs.surface === "messages" ? "1" : "0"} hidden={Boolean(activeRoom && view === "chat") || view === "now" || view === "surfaces" || view === "feed" || view === "artifacts" || view === "aresos" || (view === "chat" && !activeAgent && !activeRoom && (active?.items.length ?? 0) === 0)}>
           {railCollapsed ? (
             <button className="railReveal" onClick={toggleRail} title="Show navigation" aria-label="Show navigation">
               <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="m7 4 5 5-5 5"/><path d="M3 3v12"/></svg>
@@ -5542,7 +5955,9 @@ function App() {
           </span>
         </header>
 
-        {activeRoom && view === "chat" ? (
+        {view === "surfaces" ? (
+          <SurfacesContext.Provider value={surfacesApi}><SurfacesPane focus={surfaceFocus} /></SurfacesContext.Provider>
+        ) : activeRoom && view === "chat" ? (
           <RoomView
             key={activeRoom.id}
             room={activeRoom}
@@ -5739,6 +6154,7 @@ function App() {
                 Show earlier — {active.items.length - transcriptCap} older items
               </button>
             ) : null}
+            <SurfacesContext.Provider value={surfacesApi}>
             {(active
               ? active.items.length > transcriptCap
                 ? active.items.slice(-transcriptCap)
@@ -5761,6 +6177,7 @@ function App() {
                 ) : null}
               </Fragment>
             ))}
+            </SurfacesContext.Provider>
             {/* The typing bubble: the agent is working and has not started
                 talking yet (or is between tool calls). */}
             {activeAgent && active?.busy && !(active.items.at(-1)?.kind === "assistant" && (active.items.at(-1) as Extract<Item, { kind: "assistant" }>).streaming && (active.items.at(-1) as Extract<Item, { kind: "assistant" }>).text.trim()) ? (
@@ -5897,12 +6314,13 @@ function App() {
             </div>
           </div>
         ) : null}
+        {slot("stage.bottom")}
         {/* Kept MOUNTED on HELM (hidden, not unmounted) — unmounting destroyed
             the draft text and pending attachments every time the view flipped. */}
         <Composer
           sessionId={active?.id ?? ""}
           agentName={activeAgent?.name ?? "Ares"}
-            hidden={view === "helm" || view === "now" || view === "feed" || view === "artifacts" || view === "aresos" || Boolean(activeRoom) || (!activeAgent && !roomSeatIds.has(active?.id ?? ""))}
+            hidden={view === "helm" || view === "now" || view === "surfaces" || view === "feed" || view === "artifacts" || view === "aresos" || Boolean(activeRoom) || (!activeAgent && !roomSeatIds.has(active?.id ?? ""))}
             busy={active?.busy ?? false}
             cancelling={active?.cancelling ?? false}
             model={liveModel}
@@ -5940,8 +6358,10 @@ function App() {
               />
             ) : null}
         />
+        {slot("composer.dock")}
 
         <footer className="statusBar">
+          {slot("status")}
           <div className="statusGroup">
             {/* data-seg drives the responsive shedding order in modern.css.
                 It used to key off these buttons' `title` text, which broke the
@@ -6117,6 +6537,7 @@ function App() {
           </div>
           <span className="hudVersion" title={`Ares v${APP_VERSION}`}>{APP_VERSION}</span>
         </footer>
+        {slot("overlay")}
       </main>
 
       {forge.open ? (
@@ -6137,6 +6558,9 @@ function App() {
               <button role="tab" data-on={forge.tab === "live" ? "1" : "0"} data-live={forge.tab !== "live" && liveTarget ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "live" }))}><PixelIcon name="live" size={10} palette={forge.tab === "live" ? "blue" : "dim"} />Live</button>
               <button role="tab" data-on={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "preview" }))}><PixelIcon name="artifacts" size={10} palette={forge.tab === "preview" || forge.tab === "holo" || forge.tab === "sandbox" ? "blue" : "dim"} />Files</button>
               <button role="tab" data-on={forge.tab === "background" ? "1" : "0"} onClick={() => { setForge((f) => ({ ...f, tab: "background" })); daemonCmd({ type: "subagents_list" }); daemonCmd({ type: "background_list", sessionId: active?.id }); daemonCmd({ type: "operator_status" }); daemonCmd({ type: "mandates_list" }); }}>Background</button>
+              {forge.tab === "surfaces" || Object.values(surfaces).some((s) => s.manifest.placement === "rail") ? (
+                <button role="tab" data-on={forge.tab === "surfaces" ? "1" : "0"} onClick={() => setForge((f) => ({ ...f, tab: "surfaces" }))}>Surfaces</button>
+              ) : null}
             </div>
             <span className="forgeSurfaceState" data-live={forge.tab === "live" && liveBrowser && Date.now() - liveBrowser.at < 4000 ? "1" : "0"}>
               {forge.tab === "live" ? (embeddedActive ? "interactive canvas" : liveTarget ? "browser canvas" : "canvas ready") : forge.tab === "holo" ? "spatial artifact" : forge.artifact ? forge.artifact.label : "artifact canvas"}
@@ -6146,6 +6570,9 @@ function App() {
             </button>
           </header>
 
+          {forge.tab === "surfaces" ? (
+            <SurfacesContext.Provider value={surfacesApi}><SurfacesRail focus={surfaceFocus} /></SurfacesContext.Provider>
+          ) : null}
           {forge.tab === "background" ? (
             <ForgeBackgroundPanel
               jobs={active ? bgJobs[active.id] ?? [] : []}
@@ -6761,10 +7188,16 @@ function App() {
           sessionTitle={active?.title ?? "this session"}
           connected={Boolean(gatewayAccount?.connected)}
           onClose={() => (reportBusy ? null : setReportOpen(false))}
-          onSend={(note) => {
+          onSend={(note, level) => {
             if (!active?.id) return;
             setReportBusy(true);
-            daemonCmd({ type: "bug_report", id: active.id, note });
+            daemonCmd({ type: "bug_report", id: active.id, note, level });
+          }}
+          preview={reportPreview}
+          onPreview={(level, note) => {
+            if (!active?.id) return;
+            setReportPreview(null);
+            daemonCmd({ type: "bug_report_preview", id: active.id, note, level });
           }}
         />
       ) : null}
@@ -7151,33 +7584,41 @@ function BugReportModal({
   busy,
   sessionTitle,
   connected,
-  onSend,
+  preview,
+  onPreview,
   onClose,
+  onSend,
 }: {
   busy: boolean;
   sessionTitle: string;
   connected: boolean;
-  onSend: (note: string) => void;
+  preview: { level: string; summary: string; removed: string[]; events: number; bytes: number } | { error: string } | null;
+  onPreview: (level: "private" | "full", note: string) => void;
   onClose: () => void;
+  onSend: (note: string, level: "private" | "full") => void;
 }) {
   const [note, setNote] = useState("");
+  const [level, setLevel] = useState<"private" | "full">("private");
+  const [showing, setShowing] = useState(false);
+  const ready = preview && !("error" in preview) && preview.level === level;
   return (
     <div className="paletteScrim" onClick={onClose}>
       <div className="palette bugReport" onClick={(e) => e.stopPropagation()}>
         <header className="bugReportHead">
           <strong>🐛 Report a bug</strong>
-          {/* Label the session name — a bare truncated first-message ("hey") floating
-             top-right reads as a random keyword (bug report dac60375). */}
           <em title={`The session being reported: ${sessionTitle}`}>Session: “{sessionTitle}”</em>
         </header>
         <p className="bugReportBlurb">
-          This uploads the <b>whole chat</b> — every message, all generated code, every tool call and its
-          result, and any errors — to your Ares account so the owner can see exactly what went wrong and improve
-          Ares. Nothing is sent unless you press Send.
+          This sends what Ares <b>did</b> in this chat: every step, every tool it ran, every error and how long things took, plus a summary of where it
+          broke and how to get there again. Keys, your name, your email and where your files live are removed first. Nothing is sent until you press Send.
         </p>
         {!connected ? (
           <div className="bugReportWarn">You're not connected to your Ares account. Connect at doingteam.com → Account first, or this will fail.</div>
         ) : null}
+        <div className="bugReportLevels" role="radiogroup" aria-label="What to include">
+          <label><input type="radio" name="bugLevel" checked={level === "private"} onChange={() => { setLevel("private"); setShowing(false); }} /> <b>Private</b> — file contents and code replaced by sizes and hashes; tool output only where it reports an error.</label>
+          <label><input type="radio" name="bugLevel" checked={level === "full"} onChange={() => { setLevel("full"); setShowing(false); }} /> <b>Full</b> — the code Ares read and wrote stays in, for a bug in that code. Names, keys and paths are still removed.</label>
+        </div>
         <label className="bugReportLabel">
           What went wrong? <span>(optional, but it helps)</span>
         </label>
@@ -7186,13 +7627,23 @@ function BugReportModal({
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder="e.g. asked for a snake game — it created the HTML but the arrow keys don't move the snake, and it claimed it was done"
-          rows={4}
+          rows={3}
           autoFocus
           spellCheck
         />
+        {showing ? (
+          preview && "error" in preview ? <div className="bugReportWarn">{preview.error}</div>
+          : ready ? (
+            <div className="bugReportPreview">
+              <div className="bugReportMeta">This is the whole report: {preview.events} events, about {Math.max(1, Math.round(preview.bytes / 1024))} KB compressed.</div>
+              <pre>{preview.summary}</pre>
+            </div>
+          ) : <div className="bugReportMeta">Building the preview…</div>
+        ) : null}
         <div className="bugReportActions">
           <button className="ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="primary" onClick={() => onSend(note.trim())} disabled={busy}>
+          <button className="ghost" onClick={() => { setShowing(true); onPreview(level, note.trim()); }} disabled={busy}>See what gets sent</button>
+          <button className="primary" onClick={() => onSend(note.trim(), level)} disabled={busy}>
             {busy ? "Sending…" : "Send report"}
           </button>
         </div>
@@ -10411,6 +10862,10 @@ const ItemView = React.memo(function ItemView({
     );
   }
   if (item.kind === "user") {
+    // The owner acted inside a surface (a button, a form): one quiet line
+    // naming the surface and what it sent, not the model-facing framing.
+    const intent = item.text ? /^\[SURFACE INTENT · ([a-z0-9-]+) · [^\]]*\]\n([\s\S]*?)\n\n\(The owner acted inside/.exec(item.text) : null;
+    if (intent) return <div className="jobNotice surfaceIntentNotice">▦ {intent[1]} · {intent[2].trim().slice(0, 200)}</div>;
     // A scheduled job coming due (daemon/jobs.ts): a quiet notice, not a
     // bubble that looks like the owner typed it.
     const job = item.text ? /^\(Scheduled job "([^"]{1,80})" — ([^.]{1,80})\./.exec(item.text) : null;
@@ -10554,6 +11009,32 @@ const ItemView = React.memo(function ItemView({
         {fmtMs(item.durationMs)} · {calls} call{calls === 1 ? "" : "s"} · {fmtTokens(perCall)} context · ↓{fmtTokens(item.output)} written
         {item.cacheRead > 0 && cachedPct >= 50 ? ` · ${cachedPct}% cached` : ""}
         {item.model ? <span className="usageModelTag">{item.model}{item.provider ? ` (${item.provider})` : ""}{item.lane ? ` · ${item.lane}` : ""}</span> : null}
+      </div>
+    );
+  }
+  if (item.kind === "surface") return <SurfaceCard name={item.name} />;
+  if (item.kind === "genui") return <GenuiCard name={item.name} />;
+  if (item.kind === "permission" && item.toolName === "Surface" && item.input && typeof item.input === "object" && (item.input as { action?: unknown }).action === "offer") {
+    // The offer card: Ares proposes a surface before building it. Make it is
+    // the approval the create that follows rides on; Not now builds nothing.
+    const offer = item.input as { name?: string; title?: string; placement?: string; brief?: string };
+    return (
+      <div className="gate surfaceOffer" data-decided={item.decided ? "1" : "0"} aria-busy={item.submitting ? "true" : undefined}>
+        <div className="surfaceOfferHead">
+          <span className="surfaceOfferMark" aria-hidden="true">▦</span>
+          <strong>{offer.title || offer.name || "A surface"}</strong>
+          <em>{offer.placement || "card"}</em>
+        </div>
+        <span className="surfaceOfferBrief">{item.reason || offer.brief || ""}</span>
+        {item.decided ? (
+          <em className="gateDecided">{item.decided === "deny" ? "not now" : "building it"}</em>
+        ) : (
+          <div className="surfaceOfferActions">
+            {item.submitting ? <em className="gateDecided">sending…</em> : null}
+            <button className="surfaceOfferMake" disabled={!!item.submitting} onClick={() => onPermission(item.id, "allow_once")}>Make it</button>
+            <button className="surfaceOfferSkip" disabled={!!item.submitting} onClick={() => onPermission(item.id, "deny")}>Not now</button>
+          </div>
+        )}
       </div>
     );
   }
@@ -14148,15 +14629,20 @@ const rootEl = document.getElementById("root");
 if (rootEl) {
   const query = new URLSearchParams(window.location.search);
   const isPresenceSurface = query.get("presence") === "1";
+  const surfaceWindowName = query.get("surfaceWindow");
   const livingHash = window.location.hash.match(/^#living\/([a-z0-9_-]+)$/i);
   const isLivingSurface = query.get("living") === "1" || Boolean(livingHash);
   const livingSessionId = livingHash?.[1] || query.get("session") || `sess_living_${Date.now()}`;
-  if (isPresenceSurface) document.body.dataset.presence = "1";
+  // See-through from the first paint: the page's own background is what turned
+  // a transparent window into a white sheet.
+  if (isPresenceSurface || query.get("see") === "1") document.body.dataset.presence = "1";
   // Vite HMR re-evaluates this module — reuse the root across hot reloads.
   const holder = window as unknown as { __aresRoot?: ReturnType<typeof createRoot> };
   holder.__aresRoot ??= createRoot(rootEl);
   holder.__aresRoot.render(
-    isPresenceSurface
+    surfaceWindowName
+      ? <AresErrorBoundary><SurfaceWindow name={surfaceWindowName} see={query.get("see") === "1"} /></AresErrorBoundary>
+      : isPresenceSurface
       ? <PresenceOverlay />
       : isLivingSurface
         ? <AresErrorBoundary><LivingSurface sessionId={livingSessionId} /></AresErrorBoundary>

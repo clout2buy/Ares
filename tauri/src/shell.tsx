@@ -7,8 +7,17 @@
 // medallions: one line-icon set (Ionicons-like, 24px grid, 1.8 stroke), a tab
 // bar with the app's five tabs, each with its own light, and window controls
 // that do what a desktop app's do.
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import "./shell.css";
+
+/** GenUI is the owner's off switch, so no look may hide it: inline !important
+ * outranks anything a stylesheet can say. */
+function keepVisible(el: HTMLElement | null): void {
+  if (!el) return;
+  el.style.setProperty("visibility", "visible", "important");
+  el.style.setProperty("opacity", "1", "important");
+  el.style.setProperty("pointer-events", "auto", "important");
+}
 
 export type IconName =
   | "chat" | "pulse" | "news" | "grid" | "devices" | "search" | "forge" | "settings"
@@ -54,6 +63,8 @@ export function MsgTitlebar({
   onAccount,
   onSearch,
   onForge,
+  genui,
+  onGenui,
   onExport,
   onReport,
   onSettings,
@@ -69,6 +80,9 @@ export function MsgTitlebar({
   onAccount: () => void;
   onSearch: () => void;
   onForge: () => void;
+  /** The GenUI switch; absent on surfaces without it. */
+  genui?: boolean;
+  onGenui?: () => void;
   /** Download this chat as a text file (chat + tool calls + errors); absent = no chat open. */
   onExport?: () => void;
   /** Open the Report a bug dialog for this chat; absent = no chat open. */
@@ -94,6 +108,7 @@ export function MsgTitlebar({
         <button className="msTool" onClick={onReport} disabled={!onReport} title="Report a bug — send this chat to the Ares team" aria-label="Report a bug"><Icon name="bug" size={19} /></button>
         <button className="msTool" onClick={onSettings} title="Settings" aria-label="Settings"><Icon name="settings" size={19} /></button>
       </div>
+      {onGenui ? <button ref={keepVisible} className="msGenui" data-on={genui ? "1" : "0"} onMouseDown={stop} onClick={onGenui} title={genui ? "GenUI is on: Ares can change itself. Click to lock it." : "Turn on GenUI: let Ares change itself, live"} aria-pressed={genui ? "true" : "false"}><i aria-hidden="true" />GenUI</button> : null}
       <button className="msForge" data-on={forgeOpen ? "1" : "0"} onMouseDown={stop} onClick={onForge} title={forgeOpen ? "Close the Forge" : "Open the Forge"} aria-label="Forge"><Icon name="forge" size={16} /></button>
       {native ? (
         <div className="msWin" onMouseDown={stop}>
@@ -118,17 +133,24 @@ const TABS: Array<{ id: MsgTab; label: string; icon: IconName; tone: string }> =
   { id: "devices", label: "Devices", icon: "devices", tone: "#3fd18b" },
 ];
 
-export function MsgTabBar({ active, badges, live, onChange }: { active: MsgTab | null; badges?: Partial<Record<MsgTab, number | "!">>; live?: Partial<Record<MsgTab, boolean>>; onChange: (tab: MsgTab) => void }) {
-  const index = Math.max(0, TABS.findIndex((t) => t.id === active));
-  const tone = TABS[index]!.tone;
+export interface NavTab { id: string; label: string; icon: IconName; tone: string; surface?: string; menu?: string[] }
+export const DEFAULT_NAV: readonly NavTab[] = TABS;
+
+export function MsgTabBar({ tabs = DEFAULT_NAV, active, badges, live, onChange }: { tabs?: readonly NavTab[]; active: string | null; badges?: Record<string, number | "!" | undefined>; live?: Record<string, boolean | undefined>; onChange: (tab: string, button: HTMLElement) => void }) {
+  // A tab that just joined the bar arrives with a small pop, once.
+  const known = useRef<Set<string> | null>(null);
+  const fresh = known.current ? new Set(tabs.filter((t) => !known.current!.has(t.id)).map((t) => t.id)) : new Set<string>();
+  useEffect(() => { known.current = new Set(tabs.map((t) => t.id)); }, [tabs]);
+  const index = Math.max(0, tabs.findIndex((t) => t.id === active));
+  const tone = tabs[index]?.tone ?? "#ff7a1a";
   return (
-    <nav className="msTabs" role="tablist" aria-label="Sections" style={{ ["--tab-i" as string]: String(index), ["--tab-tone" as string]: tone, ["--tab-n" as string]: String(TABS.length) }}>
+    <nav className="msTabs" role="tablist" aria-label="Sections" style={{ ["--tab-i" as string]: String(index), ["--tab-tone" as string]: tone, ["--tab-n" as string]: String(tabs.length) }}>
       {active ? <span className="msTabLight" aria-hidden="true" /> : null}
-      {TABS.map((t) => {
+      {tabs.map((t) => {
         const on = t.id === active;
         const badge = badges?.[t.id];
         return (
-          <button key={t.id} role="tab" aria-selected={on} className="msTab" data-on={on ? "1" : "0"} style={{ ["--tone" as string]: t.tone }} onClick={() => onChange(t.id)} title={t.label}>
+          <button key={t.id} role="tab" aria-label={t.label} aria-selected={on} className="msTab" data-on={on ? "1" : "0"} data-new={fresh.has(t.id) ? "1" : undefined} style={{ ["--tone" as string]: t.tone }} onClick={(e) => onChange(t.id, e.currentTarget)} title={t.label}>
             <span className="msTabIcon">
               {live?.[t.id] ? <i className="msTabLive" aria-hidden="true" /> : null}
               <Icon name={t.icon} size={22} filled={on} />

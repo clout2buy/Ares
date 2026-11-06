@@ -387,6 +387,7 @@ export class AnthropicProvider implements Provider {
     const blocks = new Map<number, BlockState>();
     let usage: Usage = { inputTokens: 0, outputTokens: 0 };
     let stopReason: StopReason = "end_turn";
+    let oddStop = "";
     let messageId = "";
 
     const cancel = (): void => {
@@ -510,6 +511,14 @@ export class AnthropicProvider implements Provider {
           case "message_delta": {
             if (evt.usage) usage = mergeUsage(usage, evt.usage);
             stopReason = mapStopReason(evt.delta?.stop_reason) ?? stopReason;
+            // A reason this code does not know (a refusal, say) must never pass
+            // for a normal finish: the owner sees a reply just stop dead.
+            if (evt.delta?.stop_reason && !mapStopReason(evt.delta.stop_reason)) {
+              const details = (evt.delta as { stop_details?: { category?: string; explanation?: string } }).stop_details;
+              oddStop = evt.delta.stop_reason === "refusal"
+                ? `Anthropic's ${details?.category ?? "safety"} safeguards stopped this reply.${details?.explanation ? ` ${details.explanation}` : ""}`.slice(0, 400)
+                : `The model stopped this reply: ${evt.delta.stop_reason}.`;
+            }
             continue;
           }
 
@@ -574,6 +583,10 @@ export class AnthropicProvider implements Provider {
       }
     }
 
+    if (oddStop) {
+      content.push({ type: "text", text: oddStop });
+      yield { type: "text_delta", text: oddStop };
+    }
     const message: Message = {
       id: messageId || `msg_${Date.now().toString(36)}`,
       role: "assistant",
@@ -742,7 +755,9 @@ export function buildMessagesBody(
     } else {
       const budget = thinkingBudgetTokens(req.reasoningLevel);
       body.thinking = { type: "enabled", budget_tokens: budget };
-      body.max_tokens = budget + outputAllowance;
+      // The allowance was sized for whichever model the session started on: after
+      // a switch the sum can pass the API ceiling and 400 every call in the chat.
+      body.max_tokens = Math.min(budget + outputAllowance, 128_000);
       if (supportsAnthropicEffort(req.model)) {
         body.output_config = { effort: anthropicReasoningEffort(req.reasoningLevel, req.model) };
       }

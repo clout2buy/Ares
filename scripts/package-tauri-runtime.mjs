@@ -100,6 +100,8 @@ await cp(path.join(root, "packages", "agent", "templates"), templatesOut, {
 await cp(path.join(root, "packages", "agent", "skills"), path.join(runtime, "skills"), {
   recursive: true,
 });
+// Modules promoted to base (packages/agent/base-modules): every install gets them.
+await cp(path.join(root, "packages", "agent", "base-modules"), path.join(runtime, "base-modules"), { recursive: true }).catch(() => undefined);
 await cp(path.join(root, "voice_service"), voiceServiceOut, {
   recursive: true,
 });

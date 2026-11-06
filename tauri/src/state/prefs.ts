@@ -35,6 +35,9 @@ export interface Prefs {
    *  "calmer"). hue rotates the ember palette of the glow + header ring;
    *  speed paces the ring; label is a short caption shown while working. */
   uiEffect?: { hue?: number; speed?: "calm" | "steady" | "brisk"; label?: string };
+  /** The surface that currently IS the window (docs/CREATOR-MODE-DESIGN.md,
+   *  level 2). Unset = the standard shell. Restore default shell clears it. */
+  rootSurface?: string;
   /** Pinned session ids (shown in their own rail section). */
   pinned: string[];
   /** Session id → project name. Groups related sessions under a named,
@@ -246,6 +249,7 @@ export function loadPrefs(): Prefs {
             : raw.flameMode === "immersive" || raw.flameMode === "combat"
               ? "glow"
               : fallback.flameMode,
+      rootSurface: typeof raw.rootSurface === "string" && /^[a-z0-9][a-z0-9-]{1,40}$/.test(raw.rootSurface) ? raw.rootSurface : undefined,
       uiEffect:
         raw.uiEffect && typeof raw.uiEffect === "object"
           ? {

@@ -64,3 +64,37 @@ test("it still gives up when the connection never comes back", async () => {
   assert.equal(provider.calls, 7, "1 try + 6 retries");
   assert.equal(events.find((e) => e.type === "turn_end").status, "failed");
 });
+
+test("a connection lost while a tool call is being drafted retries; nothing has run yet", async () => {
+  let calls = 0;
+  const provider = {
+    name: "drops-mid-draft",
+    async *stream() {
+      calls += 1;
+      if (calls === 1) {
+        yield { type: "tool_use_start", id: "t1", name: "Surface" };
+        yield { type: "tool_use_input_delta", id: "t1", deltaJson: '{"html' };
+        yield { type: "error", error: { code: "stream_read_error", message: "terminated", retriable: true } };
+        return;
+      }
+      yield { type: "message_done", message: { id: "ok", role: "assistant", content: [{ type: "text", text: "made it" }], createdAt: new Date().toISOString() }, usage: { inputTokens: 1, outputTokens: 1 }, stopReason: "end_turn" };
+    },
+  };
+  const events = await run(provider);
+  assert.equal(calls, 2, "it tried again");
+  assert.equal(events.at(-1).status ?? events.find((e) => e.type === "turn_end")?.status, "completed");
+});
+
+test("a connection lost after the owner saw text does not silently repeat it", async () => {
+  let calls = 0;
+  const provider = {
+    name: "drops-mid-text",
+    async *stream() {
+      calls += 1;
+      yield { type: "text_delta", text: "half a sen" };
+      yield { type: "error", error: { code: "stream_read_error", message: "terminated", retriable: true } };
+    },
+  };
+  await run(provider);
+  assert.equal(calls, 1);
+});

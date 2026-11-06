@@ -100,8 +100,27 @@ const handlers = {
   ares_set_routing: (a) => writeDaemon({ type: "routing", routing: a.routing }),
   ares_set_provider_key: (a) => writeDaemon({ type: "provider_key", provider: a.provider, key: a.key, model: a.model ?? null }),
   ares_dev_mode: () => true,
+  // The dev stand-in for the native webview capture: the page's rectangle on screen.
+  ares_capture_view: (a) => captureScreen(a.rect),
   ares_read_text_file: async (a) => (await import("node:fs/promises")).readFile(a.path, "utf8"),
 };
+
+// The preview pane sits this far below the top of its host window.
+const TOP = Number(process.env.BRIDGE_CAPTURE_TOP || 125);
+
+function captureScreen(rect) {
+  if (process.platform !== "win32" || !rect) return null;
+  const n = (v) => Math.round(Number(v) || 0);
+  const s = Number(rect.scale) || 1;
+  const script = `Add-Type -AssemblyName System.Drawing; Add-Type -Name D -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'; [void][W.D]::SetProcessDPIAware(); $b = New-Object System.Drawing.Bitmap ${n(rect.width * s)}, ${n(rect.height * s)}; $g = [System.Drawing.Graphics]::FromImage($b); $g.CopyFromScreen(${n(rect.x * s)}, ${n(rect.y * s) + TOP}, 0, 0, $b.Size); $m = New-Object System.IO.MemoryStream; $b.Save($m, [System.Drawing.Imaging.ImageFormat]::Jpeg); [Convert]::ToBase64String($m.ToArray())`;
+  return new Promise((resolve) => {
+    const shot = spawn("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true });
+    let out = "";
+    shot.stdout.on("data", (chunk) => { out += chunk; });
+    shot.on("error", () => resolve(null));
+    shot.on("close", () => resolve(out.trim() || null));
+  });
+}
 
 const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "GET,POST,OPTIONS" };
 

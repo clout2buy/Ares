@@ -982,8 +982,32 @@ function imageClearBatch(): number {
 }
 function imageKeepRounds(): number {
   const raw = Number(process.env.ARES_IMAGE_KEEP_ROUNDS);
-  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 3;
+  return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 2;
 }
+
+/**
+ * Where heavy compaction fires, as a share of the context budget. It was 0.8,
+ * which let every prompt of a long coding turn settle at 130-175k tokens on a
+ * 192k budget: with 50-100 model calls a turn, field sessions reported 4-14
+ * million input tokens for one turn. Earlier compaction keeps the steady state
+ * around half that; what is summarized is recovered the usual way (the recap,
+ * the pins, the re-read nudge). ARES_COMPACTION_RATIO tunes it.
+ */
+export const COMPACTION_THRESHOLD_RATIO = (() => {
+  const raw = Number(process.env.ARES_COMPACTION_RATIO);
+  return Number.isFinite(raw) && raw >= 0.3 && raw <= 0.95 ? raw : 0.6;
+})();
+
+/**
+ * How much of the files Ares was working in comes back after compaction. The
+ * recap used to pin up to 120k chars of whole files (48k per file) on top of a
+ * 28k-char summary, so one compaction left an 89k-char block that every later
+ * call carried. A head and a tail per file is enough to edit against; the
+ * re-read nudge covers the middle.
+ */
+export const COMPACTION_PIN_FILES = 3;
+export const COMPACTION_PIN_FILE_CHARS = 10_000;
+export const COMPACTION_PIN_TOTAL_CHARS = 30_000;
 
 // estimateTextTokens / estimateImageTokens / base64DecodedBytes live in
 // tokenEstimate.ts: prose ~4 chars/token, code/JSON/paths ~3, CJK/emoji ~1
@@ -1187,15 +1211,20 @@ const STALE_IMAGE_PLACEHOLDER = "[screenshot from an earlier step — omitted to
  * vision-heavy loop (ComputerUse / browser) otherwise retains every screenshot,
  * and a dozen full frames balloon a single turn into millions of input tokens.
  * This rewrites only the OUTBOUND copy — the engine's stored history is intact.
+ * What the owner attached outlives every screenshot: the newest two stay until
+ * nothing can stay, or a loop of screenshots pushes out the very reference it
+ * is being compared against.
  */
 export function keepRecentImages(messages: readonly Message[], keepLast = 2): Message[] {
   let seen = 0;
+  let attached = 0;
   const out: Message[] = [];
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     let changed = false;
     const content = m.content.map((b): ContentBlock => {
       if (b.type === "image") {
+        if (keepLast > 0 && ++attached <= 2) return b;
         if (++seen > keepLast) {
           changed = true;
           return { type: "text", text: STALE_IMAGE_PLACEHOLDER };
@@ -2171,7 +2200,7 @@ export class QueryEngine {
   private compactionThresholdTarget(): number {
     const base =
       this.cfg.compactionThresholdTokens ??
-      (this.cfg.contextBudgetTokens ? Math.floor(this.cfg.contextBudgetTokens * 0.8) : 0);
+      (this.cfg.contextBudgetTokens ? Math.floor(this.cfg.contextBudgetTokens * COMPACTION_THRESHOLD_RATIO) : 0);
     const learned = this.contextCeiling();
     if (learned !== null && learned > 0) {
       const cap = Math.floor(learned * 0.8);
@@ -2266,13 +2295,13 @@ export class QueryEngine {
   private persistImageDrops(keptByFit: number): boolean {
     const keepCount = keptByFit <= 1 ? keptByFit : Math.max(1, Math.floor(keptByFit / 2));
     const payloadTarget = MAX_IMAGE_PAYLOAD_BYTES / 2;
-    const slots: Array<{ get: () => ContentBlock; drop: () => void }> = [];
+    const slots: Array<{ get: () => ContentBlock; drop: () => void; attached?: boolean }> = [];
     for (const m of this.messages) {
       for (let i = 0; i < m.content.length; i++) {
         const b = m.content[i];
         if (b.type === "image") {
           const idx = i;
-          slots.push({ get: () => m.content[idx], drop: () => { m.content[idx] = { type: "text", text: STALE_IMAGE_PLACEHOLDER }; } });
+          slots.push({ attached: true, get: () => m.content[idx], drop: () => { m.content[idx] = { type: "text", text: STALE_IMAGE_PLACEHOLDER }; } });
         } else if (b.type === "tool_result" && Array.isArray(b.content)) {
           const tr = b;
           const blocks = b.content;
@@ -2296,7 +2325,9 @@ export class QueryEngine {
     let remaining = slots.length;
     let payload = slots.reduce((sum, slot) => sum + bytesOf(slot.get()), 0);
     let changed = false;
-    for (const slot of slots) {
+    // What the owner pasted goes last. It is usually the oldest image in the chat,
+    // and a reference picture is why the screenshots after it exist at all.
+    for (const slot of [...slots.filter((s) => !s.attached), ...slots.filter((s) => s.attached)]) {
       if (remaining <= keepCount && payload <= payloadTarget) break;
       if (remaining <= 1 && keepCount >= 1 && payload <= MAX_IMAGE_PAYLOAD_BYTES) break;
       payload -= bytesOf(slot.get());
@@ -2567,18 +2598,20 @@ export class QueryEngine {
     // files from the summarized span, bounded so it can't undo the compaction.
     let filePins = "";
     const pinnedPaths: string[] = [];
-    for (const rel of recentFilePathsFromSpan(older, 5)) {
+    for (const rel of recentFilePathsFromSpan(older, COMPACTION_PIN_FILES)) {
       const full = path.resolve(this.cfg.workspace, rel);
       try {
         const body = await fs.readFile(full, { encoding: "utf8", signal: maintenanceSignal });
         // A big file is the one the refactor lives in; pin its head and tail
         // rather than skipping it, so the first post-compaction edit is not blind.
-        const pinned = body.length > 48_000
-          ? `${body.slice(0, 32_000)}\n\n… [${body.length - 44_000} chars elided — Read the file for the middle] …\n\n${body.slice(-12_000)}`
+        const headChars = Math.floor(COMPACTION_PIN_FILE_CHARS * 0.7);
+        const tailChars = COMPACTION_PIN_FILE_CHARS - headChars;
+        const pinned = body.length > COMPACTION_PIN_FILE_CHARS
+          ? `${body.slice(0, headChars)}\n\n… [${body.length - headChars - tailChars} chars elided — Read the file for the middle] …\n\n${body.slice(-tailChars)}`
           : body;
         filePins += `\n\n=== CURRENT content of ${rel} (re-read after compaction) ===\n${pinned}`;
         pinnedPaths.push(rel);
-        if (filePins.length > 120_000) break;
+        if (filePins.length > COMPACTION_PIN_TOTAL_CHARS) break;
       } catch {
         // deleted/unreadable since — skip
       }
@@ -3199,6 +3232,7 @@ export class QueryEngine {
             yield { type: "provider_attempt_started", attemptId: providerAttempt.id };
 
             let sawCommittedOutput = false;
+            let sawVisibleText = false;
             try {
               if (!providerAttempt.supersededBySteering) {
                 const providerInterrupt = AbortSignal.any([this.liveSignal(), providerAttempt.steeringAbort.signal]);
@@ -3273,6 +3307,7 @@ export class QueryEngine {
                   if (isModelOutputEvent(ev)) {
                     modelStarted = true;
                     if (ev.type !== "thinking_delta") sawCommittedOutput = true;
+                    if (ev.type === "text_delta") sawVisibleText = true;
                   }
                   if (ev.type === "tool_use_start") {
                     toolNameById.set(ev.id, ev.name);
@@ -3363,7 +3398,9 @@ export class QueryEngine {
               streamError &&
               streamError.retriable &&
               !isContextLimitError(streamError) &&
-              (!modelStarted || (isStallError(streamError) && !sawCommittedOutput)) &&
+              // A connection lost mid tool-call draft loses only the draft:
+              // tools run after the stream ends, so nothing has happened yet.
+              (!modelStarted || (isStallError(streamError) && !sawCommittedOutput) || (isConnectivityError(streamError) && !sawVisibleText)) &&
               !this.liveSignal().aborted &&
               transientRetry < retryBudgetFor(streamError)
             ) {
@@ -3776,12 +3813,14 @@ export class QueryEngine {
         // "Typing then nothing" guard: a valid message_done with end_turn but
         // EMPTY content (no text, no thinking, no tool calls) is the silent-success
         // path — the model produced literally nothing yet the turn ends "completed".
-        // Nudge it once to actually produce output; if it stalls again, fall through
-        // so the turn still ends instead of looping.
+        // Nudge it to actually produce output: a model can return nothing twice
+        // running right after a tool result, and that left a request half done
+        // with no word to the owner. Past three, fall through so the turn still
+        // ends instead of looping.
         if (
           stopReason === "end_turn" &&
           messageHasNoVisibleOutput(assistantMessage) &&
-          guards.emptyTurnNudges < 1 &&
+          guards.emptyTurnNudges < (this.cfg.subagentDepth ? 1 : 3) &&
           !this.liveSignal().aborted
         ) {
           guards.emptyTurnNudges++;
@@ -3790,7 +3829,7 @@ export class QueryEngine {
             role: "user",
             content: [{
               type: "system_reminder",
-              text: "You ended the turn without producing any output — no text and no tool calls. If the task is done, say so and summarize what you did; otherwise continue the work now.",
+              text: "You ended the turn without producing any output — no text and no tool calls. The request is not finished unless you say it is: continue the work now with your next tool call, or if it really is done, say what you did.",
             }],
             createdAt: new Date().toISOString(),
           });

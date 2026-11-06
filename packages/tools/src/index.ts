@@ -202,6 +202,19 @@ export { EmailTool, type EmailOutput } from "./Email.js";
 export { RequestUserActionTool, type RequestUserActionOutput } from "./RequestUserAction.js";
 export { SetUiEffectTool, type SetUiEffectOutput } from "./SetUiEffect.js";
 export { ChangeSettingTool, CHANGEABLE_SETTINGS, type ChangeSettingOutput, type ChangeableSetting } from "./ChangeSetting.js";
+export { SurfaceTool, refusesEmbedding, type SurfaceOutput } from "./Surface.js";
+export { answerLook, lookAtUi, setLookRequester, withEyes, type UiLook } from "./uiLook.js";
+export { IntrospectTool, genuiNow, setUiMap, type IntrospectContext, type IntrospectOutput } from "./Introspect.js";
+export { ExtensionTool, setExtensionHost, extensionHost, toolNameOf, type ExtensionHost, type ExtensionOutput } from "./Extension.js";
+export { HarnessTool, type HarnessOutput } from "./Harness.js";
+export { GENUI_OFF_MESSAGE, GENUI_TOOLS, genuiBriefing, genuiEnabled, isAresSource, setGenui } from "./genui.js";
+export { ModulesTool, installBaseModules, hashPack, type ModulesOutput } from "./Modules.js";
+export { buildPack, exportPack, loadPack, installPack, portNote, listTrash, restoreModule, packSummary, PACK_FORMAT, type Pack, type PackModule } from "./packs.js";
+export { ShellTool, shellBus, shellGo, readShellLayout, commitShellLayout, rollbackShellLayout, resetShellLayout, shellCssProblem, SHELL_REGIONS, type ShellLayout, type ShellOutput } from "./Shell.js";
+export * from "./extensionStore.js";
+export { runForgedTool, scanToolSource, manifestProblems, type RunForgedToolResult } from "./forgedToolRunner.js";
+export { installSkillSource, uninstallSkill } from "./extensionSkills.js";
+export * from "./surfaceStore.js";
 export {
   makeEnterPlanModeTool,
   makeUpdatePlanDraftTool,
@@ -396,6 +409,12 @@ import { EmailTool } from "./Email.js";
 import { RequestUserActionTool } from "./RequestUserAction.js";
 import { SetUiEffectTool } from "./SetUiEffect.js";
 import { ChangeSettingTool } from "./ChangeSetting.js";
+import { SurfaceTool } from "./Surface.js";
+import { IntrospectTool } from "./Introspect.js";
+import { ExtensionTool } from "./Extension.js";
+import { HarnessTool } from "./Harness.js";
+import { ModulesTool } from "./Modules.js";
+import { ShellTool } from "./Shell.js";
 import { WeatherTool } from "./Weather.js";
 import { RemindTool } from "./Remind.js";
 import { TelegramTool } from "./Telegram.js";
@@ -458,6 +477,12 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       RequestUserActionTool,
       SetUiEffectTool,
       ChangeSettingTool,
+      SurfaceTool,
+      IntrospectTool,
+      ExtensionTool,
+      HarnessTool,
+      ShellTool,
+      ModulesTool,
       WeatherTool,
       RemindTool,
       TelegramTool,
@@ -503,6 +528,12 @@ export const DEFAULT_TOOLS = process.platform === "win32"
       RequestUserActionTool,
       SetUiEffectTool,
       ChangeSettingTool,
+      SurfaceTool,
+      IntrospectTool,
+      ExtensionTool,
+      HarnessTool,
+      ShellTool,
+      ModulesTool,
       WeatherTool,
       RemindTool,
       TelegramTool,

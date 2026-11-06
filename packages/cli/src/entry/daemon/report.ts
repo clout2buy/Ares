@@ -155,3 +155,93 @@ export function buildReportBody(
 
   return { body, droppedEvents, bytes: body.length };
 }
+
+// ─── The summary a person reads first ────────────────────────────────────────
+// Built from scrubbed events only, so it can never say more than they do.
+
+import type { Message, RolloutEntry } from "@ares/protocol";
+
+export interface ReportEnv {
+  appVersion: string;
+  os: string;
+  provider: string;
+  model: string;
+  genui: boolean;
+  level: string;
+  removed: string[];
+  note: string;
+}
+
+function said(message: Message | undefined, max: number): string {
+  const text = (message?.content ?? []).filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("\n").trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function seconds(n: number | undefined): string {
+  return typeof n === "number" ? `${(n / 1000).toFixed(1)}s` : "?";
+}
+
+export function reportSummary(entries: readonly RolloutEntry[], env: ReportEnv): string {
+  interface Turn { n: number; ask: string; calls: string[]; broke: string[]; status: string; durationMs?: number; replied: boolean }
+  const turns: Turn[] = [];
+  const tools = new Map<string, string>();
+  let cur: Turn | undefined;
+  for (const { event } of entries) {
+    const e = event as Record<string, unknown> & { type: string };
+    if (e.type === "turn_start") {
+      cur = { n: turns.length + 1, ask: said(e.userMessage as Message, 300), calls: [], broke: [], status: "never ended", replied: false };
+      turns.push(cur);
+    } else if (!cur) {
+      continue;
+    } else if (e.type === "tool_start") {
+      tools.set(String(e.id), String(e.name));
+      cur.calls.push(String(e.name));
+    } else if (e.type === "tool_error") {
+      cur.broke.push(`${tools.get(String(e.id)) ?? "a tool"} failed: ${String(e.error ?? "").split("\n")[0].slice(0, 240)}`);
+    } else if (e.type === "message_done") {
+      if (said(e.message as Message, 1).length) cur.replied = true;
+      const stop = String(e.stopReason ?? "");
+      if (stop && stop !== "end_turn" && stop !== "tool_use") cur.broke.push(`reply cut off: ${stop}`);
+    } else if (e.type === "error") {
+      cur.broke.push(`provider error: ${JSON.stringify(e.error ?? "").slice(0, 240)}`);
+    } else if (e.type === "turn_end") {
+      cur.status = String(e.status ?? "");
+      cur.durationMs = typeof e.durationMs === "number" ? e.durationMs : undefined;
+      if (cur.status !== "completed") cur.broke.push(`ended ${cur.status}`);
+      if (!cur.replied && cur.calls.length === 0) cur.broke.push("empty reply");
+    }
+  }
+  if (cur && cur.status === "never ended") cur.broke.push("the turn never ended");
+  const out = ["ARES BUG REPORT", `Privacy level ${env.level}. Removed before sending: ${env.removed.join("; ")}.`];
+  if (env.note) out.push("", `Reported: ${env.note}`);
+  out.push("", `Ares ${env.appVersion}, ${env.os}, ${env.provider}/${env.model}, GenUI ${env.genui ? "on" : "off"}, ${turns.length} turn(s).`, "", "Where it broke:");
+  const broken = turns.flatMap((t) => t.broke.map((b) => `  turn ${t.n}: ${b}`));
+  out.push(...(broken.length ? broken : ["  no failure on record; read the last turn for what Ares said or made"]));
+  out.push("", "Steps to reproduce:");
+  for (const t of turns) {
+    out.push(`  ${t.n}. Send: ${JSON.stringify(t.ask || "(no text)")}`);
+    out.push(`     Ares ran ${t.calls.length ? t.calls.join(", ") : "no tools"}; ${t.status} in ${seconds(t.durationMs)}`);
+  }
+  return out.join("\n");
+}
+
+/** The scrubbed events as a readable chat, for the download. */
+export function transcriptText(entries: readonly RolloutEntry[]): string {
+  const out: string[] = [];
+  const tools = new Map<string, string>();
+  for (const { ts, event } of entries) {
+    const e = event as Record<string, unknown> & { type: string };
+    const at = ts.slice(11, 19);
+    if (e.type === "turn_start") out.push("", `[${at}] [USER] ${said(e.userMessage as Message, 1e9)}`);
+    else if (e.type === "message_done") {
+      const text = said(e.message as Message, 1e9);
+      if (text) out.push(`[${at}] [ARES] ${text}`);
+    } else if (e.type === "tool_start") {
+      tools.set(String(e.id), String(e.name));
+      out.push(`[${at}]   [TOOL] ${String(e.name)} ${JSON.stringify(e.input ?? {}).slice(0, 1500)}`);
+    } else if (e.type === "tool_end") out.push(`[${at}]     result: ${(typeof e.output === "string" ? e.output : JSON.stringify(e.output ?? "")).slice(0, 3000)}`);
+    else if (e.type === "tool_error") out.push(`[${at}]   [TOOL FAILED] ${tools.get(String(e.id)) ?? ""}: ${String(e.error ?? "")}`);
+    else if (e.type === "turn_end") out.push(`[${at}] [TURN ${String(e.status ?? "")}] ${String(e.provider ?? "")}/${String(e.model ?? "")} ${seconds(typeof e.durationMs === "number" ? e.durationMs : undefined)}`);
+  }
+  return out.join("\n");
+}

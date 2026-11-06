@@ -86,6 +86,19 @@ export interface DaemonInputCommand {
   reason?: string;
   /** skill_invoke payload — JSON handed to the skill's handler(input, ctx). */
   input?: unknown;
+  /** surface_share — between open surfaces. */
+  topic?: string;
+  /** ui_map — what is on the desktop's screen. */
+  map?: string[];
+  /** surface_* — the surface name (ledger id). */
+  surface?: string;
+  /** surface_rollback target; surface_place target placement. */
+  revision?: number;
+  placement?: string;
+  /** surface_call — the document's call id (echoed in the result post), the
+   *  belt tool and its input ride in `tool` / `input`. */
+  callId?: string;
+  tool?: string;
   /** skill_invoke correlation id — echoed back in skill_result so the UI can
    *  match a response to the exact call (TTS utterances, surface clicks). */
   invokeId?: string;

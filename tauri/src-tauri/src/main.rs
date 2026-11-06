@@ -90,6 +90,10 @@ struct LivingSurfaceState {
     /// packaged builds); a scheme-served document owns its headers instead.
     document: Mutex<Option<String>>,
     doc_seq: AtomicU64,
+    /// Every surface placement stages its own document (a card, two rail
+    /// tabs and a pane can all be on screen); the last few are kept by seq so
+    /// one host's reload never serves another host's page.
+    documents: Mutex<std::collections::VecDeque<(u64, String)>>,
 }
 
 /// The generated surface's entire authority. Inline script/style may run, but
@@ -389,6 +393,7 @@ fn start_daemon(
         .current_dir(&runtime.workspace)
         .env("ARES_AGENT_ENABLED", "1")
         .env("ARES_HOME", desktop_ares_home_string())
+        .env("ARES_DESKTOP_VERSION", env!("CARGO_PKG_VERSION"))
         // The Forge's native view (forge_view.rs): the Browser tool drives the
         // page the owner sees through this DevTools endpoint.
         .env("ARES_FORGE_CDP_URL", forge_view::cdp_url().unwrap_or_default())
@@ -870,7 +875,7 @@ struct EmbedInfo {
 /// Re-parent an engine window (by pid, else by title substring) into the Ares
 /// window at the given client-area rectangle (physical pixels).
 #[tauri::command]
-fn ares_embed_window(window: tauri::WebviewWindow, pid: Option<u32>, title: Option<String>, x: i32, y: i32, w: i32, h: i32) -> Result<EmbedInfo, String> {
+fn ares_embed_window(window: tauri::Window, pid: Option<u32>, title: Option<String>, x: i32, y: i32, w: i32, h: i32) -> Result<EmbedInfo, String> {
     #[cfg(windows)]
     {
         let parent = window.hwnd().map_err(|e| format!("no native window: {e}"))?.0 as isize;
@@ -932,7 +937,7 @@ fn ares_embed_release(hwnd: isize) -> Result<bool, String> {
 /// raw line into the engine).
 const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     "agent_avatar", "agent_avatar_set", "agent_bind", "agent_memory", "agent_memory_export", "agent_memory_forget", "agent_memory_hand", "agent_create", "agent_delete", "agent_update", "agents_list",
-    "anthropic_login_finish", "anthropic_login_start", "bug_report",
+    "anthropic_login_finish", "anthropic_login_start", "bug_report", "bug_report_preview", "session_export",
     "openai_login_start", "openai_auth_status",
     "ares_network_connect", "ares_network_disconnect", "ares_network_host", "ares_network_status", "ares_network_sync",
     "consciousness_cancel", "consciousness_disable", "consciousness_enable",
@@ -960,6 +965,9 @@ const ALLOWED_DAEMON_COMMANDS: &[&str] = &[
     // sent it via onDaemonCommand (which the routing test's regex did not scan)
     // and this list rejected it — the pane never refreshed in a packaged app.
     "plugins_list", "rewind",
+    // Surfaces (docs/CREATOR-MODE-DESIGN.md): the ledger read, what a document
+    // did (intent, fault, call) and the owner's card buttons.
+    "genui_get", "genui_set", "surface_share", "ui_map", "ui_seen", "surface_store", "shell_get", "shell_reset", "shell_rollback", "surfaces_list", "surface_intent", "surface_fault", "surface_call", "surface_keep", "surface_remove", "surface_rollback", "surface_place",
     // The roster + workflow surfaces. These were MISSING for their whole
     // lifetime: the UI sent them, this list rejected them with a Result::Err
     // the frontend discards, and every one of those buttons was silently dead
@@ -1323,7 +1331,7 @@ fn ares_stop_daemon(app: tauri::AppHandle, state: State<DaemonState>) -> Result<
 #[tauri::command]
 fn ares_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or_else(|| "main window unavailable".to_string())?;
     window
         .minimize()
@@ -1333,7 +1341,7 @@ fn ares_window_minimize(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn ares_window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String> {
     let window = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or_else(|| "main window unavailable".to_string())?;
     let maximized = window
         .is_maximized()
@@ -1356,7 +1364,7 @@ fn ares_window_close(app: tauri::AppHandle, state: State<DaemonState>) -> Result
         let _ = overlay.close();
     }
     let window = app
-        .get_webview_window("main")
+        .get_window("main")
         .ok_or_else(|| "main window unavailable".to_string())?;
     window
         .close()
@@ -2025,7 +2033,7 @@ fn presence_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, Strin
     // Cover the monitor containing the Ares pill. Physical coordinates avoid
     // DPI seams that leave one unlit edge on mixed-scale multi-monitor setups.
     let monitor = app
-        .get_webview_window("main")
+        .get_window("main")
         .and_then(|main| main.current_monitor().ok().flatten())
         .or_else(|| app.primary_monitor().ok().flatten());
     if let Some(monitor) = monitor {
@@ -2074,7 +2082,7 @@ fn ares_presence_update(
     // Re-evaluate the monitor each time the overlay wakes in case the user
     // dragged the pill to a different display since the last voice turn.
     if let Some(monitor) = app
-        .get_webview_window("main")
+        .get_window("main")
         .and_then(|main| main.current_monitor().ok().flatten())
     {
         let _ = window.set_position(tauri::PhysicalPosition::new(
@@ -2190,8 +2198,14 @@ fn ares_living_surface_stage(
     *state
         .document
         .lock()
-        .map_err(|_| "Living Surface document state is unavailable".to_string())? = Some(document);
+        .map_err(|_| "Living Surface document state is unavailable".to_string())? = Some(document.clone());
     let seq = state.doc_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Ok(mut docs) = state.documents.lock() {
+        docs.push_back((seq, document));
+        while docs.len() > 24 {
+            docs.pop_front();
+        }
+    }
     // Windows and Android serve custom schemes over http://<scheme>.localhost.
     #[cfg(any(windows, target_os = "android"))]
     return Ok(format!("http://ares-surface.localhost/doc/{seq}"));
@@ -2311,24 +2325,36 @@ fn main() {
         .manage(PresenceState {
             snapshot: Mutex::new(PresenceSnapshot::default()),
         })
+        .manage(SurfaceDocks::default())
         .manage(LivingSurfaceState {
             session_id: Mutex::new(None),
             document: Mutex::new(None),
             doc_seq: AtomicU64::new(0),
+            documents: Mutex::new(std::collections::VecDeque::new()),
         })
         // The Living Surface's generated document. Serving it over a dedicated
         // scheme gives it its OWN Content-Security-Policy header — a srcdoc
         // iframe would inherit the app CSP and lose every generated style and
         // script in packaged builds. The window's sandbox attribute (scripts
         // without same-origin) still applies on top.
-        .register_uri_scheme_protocol("ares-surface", |ctx, _request| {
-            let staged = ctx
-                .app_handle()
-                .state::<LivingSurfaceState>()
-                .document
-                .lock()
-                .ok()
-                .and_then(|doc| doc.clone());
+        .register_uri_scheme_protocol("ares-surface", |ctx, request| {
+            // /doc/<seq> picks the staged document for THAT host; an unknown
+            // or missing seq falls back to the latest (the Living Surface's).
+            let wanted: Option<u64> = request
+                .uri()
+                .path()
+                .rsplit('/')
+                .next()
+                .and_then(|tail| tail.parse::<u64>().ok());
+            let state = ctx.app_handle().state::<LivingSurfaceState>();
+            let by_seq = wanted.and_then(|seq| {
+                state
+                    .documents
+                    .lock()
+                    .ok()
+                    .and_then(|docs| docs.iter().find(|(s, _)| *s == seq).map(|(_, html)| html.clone()))
+            });
+            let staged = by_seq.or_else(|| state.document.lock().ok().and_then(|doc| doc.clone()));
             match staged {
                 Some(html) => tauri::http::Response::builder()
                     .header("Content-Type", "text/html; charset=utf-8")
@@ -2441,6 +2467,12 @@ fn main() {
             ares_living_surface_ready,
             ares_living_surface_context,
             ares_living_surface_stage,
+            ares_runtime_revert,
+            ares_shell_eval,
+            ares_surface_window_open,
+            ares_surface_windows_close,
+            ares_surface_window_close,
+            ares_capture_view,
             ares_forge_view_show,
             ares_forge_view_hide,
             ares_forge_view_control,
@@ -3332,10 +3364,295 @@ fn bundled_runtime_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
     candidates
 }
 
+/// A backend this install rebuilt for itself (Harness apply). Staged in
+/// `runtime-next`, promoted here while no daemon holds the files. `.trying`
+/// is cleared by the daemon once it starts; still present at the next launch
+/// means that build never came up, so it is set aside and the previous one
+/// (or the shipped one) runs. A build for another app version is ignored.
+fn rebuilt_runtime() -> Option<AresRuntime> {
+    let home = PathBuf::from(desktop_ares_home_string());
+    let active = home.join("runtime-active");
+    let next = home.join("runtime-next");
+    let previous = home.join("runtime-previous");
+    let failed = home.join("runtime-failed");
+    if home.join("runtime-revert").exists() {
+        let _ = fs::remove_file(home.join("runtime-revert"));
+        let _ = fs::remove_dir_all(&active);
+        let _ = fs::remove_dir_all(&previous);
+    }
+    if active.join(".trying").exists() {
+        let _ = fs::remove_dir_all(&failed);
+        let _ = fs::rename(&active, &failed);
+        let _ = fs::rename(&previous, &active);
+    }
+    if next.join(".ready").exists() {
+        let _ = fs::remove_dir_all(&previous);
+        let _ = fs::rename(&active, &previous);
+        if fs::rename(&next, &active).is_ok() {
+            let _ = fs::remove_file(active.join(".ready"));
+            let _ = fs::write(active.join(".trying"), "");
+        }
+    }
+    let version = fs::read_to_string(active.join(".version")).unwrap_or_default();
+    if version.trim() != env!("CARGO_PKG_VERSION") {
+        return None;
+    }
+    runtime_at(&active)
+}
+
+/// How a surface's OS window sits on the desktop (SurfaceFrame.window).
+#[derive(serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase", default)]
+struct SurfaceWindowFrame {
+    dock: Option<String>,
+    cover: Option<bool>,
+    width: Option<f64>,
+    height: Option<f64>,
+    x: Option<f64>,
+    y: Option<f64>,
+    decorations: Option<bool>,
+    transparent: Option<bool>,
+    always_on_top: Option<bool>,
+    click_through: Option<bool>,
+}
+
+/// Windows stuck to a side of Ares, and whether the main window is being
+/// followed yet.
+#[derive(Default)]
+struct SurfaceDocks {
+    docks: Mutex<std::collections::HashMap<String, (String, f64)>>,
+    following: std::sync::atomic::AtomicBool,
+}
+
+fn place_docked(app: &tauri::AppHandle, label: &str, side: &str, thickness: f64) {
+    let (Some(main), Some(window)) = (app.get_window("main"), app.get_webview_window(label)) else {
+        return;
+    };
+    let (Ok(pos), Ok(size), Ok(scale)) = (main.outer_position(), main.outer_size(), main.scale_factor()) else {
+        return;
+    };
+    let t = (thickness * scale) as i32;
+    let (w, h) = if matches!(side, "left" | "right") { (t as u32, size.height) } else { (size.width, t as u32) };
+    let _ = window.set_size(tauri::PhysicalSize::new(w, h));
+    // Its real outer size, frame included, so it touches Ares instead of overlapping.
+    let outer = window.outer_size().unwrap_or(tauri::PhysicalSize::new(w, h));
+    let (x, y) = match side {
+        "left" => (pos.x - outer.width as i32, pos.y),
+        "right" => (pos.x + size.width as i32, pos.y),
+        "top" => (pos.x, pos.y - outer.height as i32),
+        _ => (pos.x, pos.y + size.height as i32),
+    };
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// A surface in its own OS window, anywhere on the desktop. Each gets a stable
+/// label, so reopening focuses it and a restart can bring it back.
+#[tauri::command]
+async fn ares_surface_window_open(
+    app: tauri::AppHandle,
+    name: String,
+    title: String,
+    focus: bool,
+    frame: Option<SurfaceWindowFrame>,
+    url: Option<String>,
+    state: State<'_, SurfaceDocks>,
+) -> Result<(), String> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("invalid surface name".to_string());
+    }
+    let frame = frame.unwrap_or_default();
+    let label = format!("surface-{name}");
+    let window = match app.get_webview_window(&label) {
+        Some(existing) => {
+            if focus {
+                let _ = existing.set_focus();
+            }
+            existing
+        }
+        None => {
+            let framed = frame.decorations.unwrap_or(frame.dock.is_none() && frame.cover != Some(true));
+            let transparent = frame.transparent == Some(true);
+            // Nothing that can sit over the desktop appears until its document
+            // has loaded (SurfaceWindow shows it), so a page that fails to load
+            // leaves nothing on screen instead of a white sheet over everything.
+            // A website has no document of ours to show the window when ready.
+            let web = match url.as_deref() {
+                Some(raw) => {
+                    let parsed = tauri::Url::parse(raw).map_err(|e| format!("bad address: {e}"))?;
+                    if !matches!(parsed.scheme(), "http" | "https") {
+                        return Err("a surface window opens http or https addresses".to_string());
+                    }
+                    Some(parsed)
+                }
+                None => None,
+            };
+            let overlay = web.is_none() && (transparent || frame.cover == Some(true));
+            let see = if transparent { "&see=1" } else { "" };
+            let built = tauri::WebviewWindowBuilder::new(
+                &app,
+                label.clone(),
+                match web {
+                    Some(page) => tauri::WebviewUrl::External(page),
+                    None => tauri::WebviewUrl::App(format!("index.html?surfaceWindow={name}{see}").into()),
+                },
+            )
+            .title(title)
+            .visible(!overlay)
+            .inner_size(frame.width.unwrap_or(560.0), frame.height.unwrap_or(680.0))
+            .min_inner_size(60.0, 40.0)
+            .resizable(true)
+            .decorations(framed)
+            .transparent(transparent)
+            .shadow(!transparent)
+            .always_on_top(frame.always_on_top == Some(true))
+            .skip_taskbar(frame.dock.is_some() || frame.cover == Some(true))
+            .build()
+            .map_err(|e| format!("failed to open the surface window: {e}"))?;
+            #[cfg(windows)]
+            if !framed {
+                hide_windows_accent_border(&built);
+            }
+            built
+        }
+    };
+    if let (Some(x), Some(y)) = (frame.x, frame.y) {
+        let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+    }
+    if frame.cover == Some(true) {
+        let monitor = app
+            .get_window("main")
+            .and_then(|main| main.current_monitor().ok().flatten())
+            .or_else(|| app.primary_monitor().ok().flatten());
+        if let Some(monitor) = monitor {
+            let _ = window.set_position(tauri::PhysicalPosition::new(monitor.position().x, monitor.position().y));
+            let _ = window.set_size(tauri::PhysicalSize::new(monitor.size().width, monitor.size().height));
+        }
+    }
+    if let Some(side) = frame.dock.clone() {
+        let thickness = match side.as_str() {
+            "top" | "bottom" => frame.height.unwrap_or(220.0),
+            _ => frame.width.unwrap_or(320.0),
+        };
+        place_docked(&app, &label, &side, thickness);
+        if let Ok(mut docks) = state.docks.lock() {
+            docks.insert(label.clone(), (side, thickness));
+        }
+        if !state.following.swap(true, Ordering::SeqCst) {
+            if let Some(main) = app.get_window("main") {
+                let handle = app.clone();
+                main.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)) {
+                        let state = handle.state::<SurfaceDocks>();
+                        let docks = state.docks.lock().map(|d| d.clone()).unwrap_or_default();
+                        for (label, (side, thickness)) in docks {
+                            place_docked(&handle, &label, &side, thickness);
+                        }
+                    }
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run the owner-approved shell script in the page. The packaged CSP forbids
+/// inline script, so it goes through the webview rather than a tag.
+#[tauri::command]
+fn ares_shell_eval(webview: tauri::Webview, code: String) -> Result<(), String> {
+    webview.eval(&code).map_err(|e| e.to_string())
+}
+
+/// The way out: close every surface window, whatever it is doing.
+#[tauri::command]
+fn ares_surface_windows_close(app: tauri::AppHandle) {
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("surface-") {
+            let _ = window.destroy();
+        }
+    }
+}
+
+/// One surface window, for a document's ares.hide or ares.toggle. Says whether
+/// there was one to close.
+#[tauri::command]
+fn ares_surface_window_close(app: tauri::AppHandle, name: String) -> bool {
+    match app.get_webview_window(&format!("surface-{name}")) {
+        Some(window) => window.destroy().is_ok(),
+        None => false,
+    }
+}
+
+/// A real picture of a webview, as base64 JPEG: what Ares looks at to judge what
+/// it built. The webview composites it, so sandboxed surfaces are all in it.
+#[cfg(windows)]
+#[tauri::command]
+async fn ares_capture_view(app: tauri::AppHandle, label: Option<String>) -> Result<Option<String>, String> {
+    use webview2_com::CapturePreviewCompletedHandler;
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG;
+    use windows::Win32::System::Com::{STREAM_SEEK_END, STREAM_SEEK_SET};
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+
+    let label = label.unwrap_or_else(|| "main".to_string());
+    let Some(window) = app.get_webview(&label) else {
+        return Ok(None);
+    };
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>, String>>();
+    window
+        .with_webview(move |view| unsafe {
+            let fail = tx.clone();
+            let started = (|| -> Result<(), String> {
+                let core = view.controller().CoreWebView2().map_err(|e| e.to_string())?;
+                let stream = SHCreateMemStream(None).ok_or("no memory stream")?;
+                let filled = stream.clone();
+                let handler = CapturePreviewCompletedHandler::create(Box::new(move |result| {
+                    let bytes = result.map_err(|e| e.to_string()).and_then(|_| {
+                        let mut size = 0u64;
+                        filled.Seek(0, STREAM_SEEK_END, Some(&mut size)).map_err(|e| e.to_string())?;
+                        filled.Seek(0, STREAM_SEEK_SET, None).map_err(|e| e.to_string())?;
+                        let mut buffer = vec![0u8; size as usize];
+                        let mut read = 0u32;
+                        filled.Read(buffer.as_mut_ptr().cast(), size as u32, Some(&mut read)).ok().map_err(|e| e.to_string())?;
+                        buffer.truncate(read as usize);
+                        Ok(buffer)
+                    });
+                    let _ = tx.send(bytes);
+                    Ok(())
+                }));
+                core.CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_JPEG, &stream, &handler).map_err(|e| e.to_string())
+            })();
+            if let Err(error) = started {
+                let _ = fail.send(Err(error));
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(5)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "the webview did not answer".to_string())??;
+    Ok(Some(base64_encode(&bytes)))
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+async fn ares_capture_view(_label: Option<String>) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+/// Palette: "Use the shipped backend" — works when the rebuilt daemon is up
+/// but wrong, since it never touches that daemon.
+#[tauri::command]
+fn ares_runtime_revert() -> Result<(), String> {
+    let home = PathBuf::from(desktop_ares_home_string());
+    let _ = fs::remove_dir_all(home.join("runtime-next"));
+    fs::write(home.join("runtime-revert"), "").map_err(|e| e.to_string())
+}
+
 fn bundled_runtime(app: &tauri::AppHandle) -> Option<AresRuntime> {
-    bundled_runtime_candidates(app)
-        .iter()
-        .find_map(|root| runtime_at(root))
+    rebuilt_runtime().or_else(|| {
+        bundled_runtime_candidates(app)
+            .iter()
+            .find_map(|root| runtime_at(root))
+    })
 }
 
 /// The first runtime layout that is PRESENT but unusable, described. Resolution

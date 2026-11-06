@@ -106,7 +106,7 @@ function assertPairingValid(engine) {
 }
 
 test("images older than the keep window are cleared; recent rounds keep full fidelity", async (t) => {
-  delete process.env.ARES_IMAGE_KEEP_ROUNDS; // default 3
+  delete process.env.ARES_IMAGE_KEEP_ROUNDS; // default 2
   process.env.ARES_IMAGE_CLEAR_BATCH = "1"; // clear as soon as one ages out (the batching has its own test)
   t.after(() => { delete process.env.ARES_IMAGE_CLEAR_BATCH; });
   const engine = makeEngine("sess_img_micro");
@@ -117,7 +117,7 @@ test("images older than the keep window are cleared; recent rounds keep full fid
   const results = toolResultsById(engine);
   assert.equal(results.size, 6, "six screenshot results recorded");
 
-  for (const old of ["r0", "r1", "r2"]) {
+  for (const old of ["r0", "r1", "r2", "r3"]) {
     const content = results.get(old).content;
     assert.ok(Array.isArray(content), `${old} content stays an array (mutated in place)`);
     assert.equal(content.filter((b) => b.type === "image").length, 0, `${old} image gone`);
@@ -128,7 +128,7 @@ test("images older than the keep window are cleared; recent rounds keep full fid
     // The original text block survives — only the image was cleared.
     assert.ok(content.some((b) => b.type === "text" && b.text.includes("captured")), `${old} text output untouched`);
   }
-  for (const recent of ["r3", "r4", "r5"]) {
+  for (const recent of ["r4", "r5"]) {
     const content = results.get(recent).content;
     assert.equal(content.filter((b) => b.type === "image").length, 1, `${recent} keeps its screenshot`);
     assert.equal(content.find((b) => b.type === "image").source.data, IMAGE_DATA, `${recent} image intact`);

@@ -14,6 +14,7 @@ import {
   probeAresOauth,
   normalizeGatewayBase,
   captureLoopbackCode,
+  freeLoopbackPort,
 } from "../packages/core/dist/index.js";
 
 const BASE = "https://www.doingteam.com";
@@ -144,7 +145,8 @@ test("runAresAccountSignin: a capture failure (denied/timeout) propagates", asyn
 
 // ── Real loopback server: the security-relevant state check over a socket ─────
 
-const PORT = 53699; // off the default 53691 to avoid clashes
+// Windows can reserve this whole range, so ask for what is really free.
+const PORT = await freeLoopbackPort(53699); // off the default 53691 to avoid clashes
 const REDIRECT = `http://127.0.0.1:${PORT}/oauth/callback`;
 
 test("captureLoopbackCode: resolves the code when state matches", async () => {

@@ -76,6 +76,11 @@ export const SkillReadTool = buildTool({
   },
 });
 
+/** Every skill visible from a workspace (home first, then the project). */
+export async function scanSkills(workspace: string): Promise<SkillSummary[]> {
+  return (await Promise.all(skillRoots(workspace).map(scanRoot))).flat();
+}
+
 function skillRoots(workspace: string): string[] {
   const home = process.env.ARES_HOME || path.join(os.homedir(), ".ares");
   return [path.join(home, "skills"), path.join(workspace, ".ares", "skills")];

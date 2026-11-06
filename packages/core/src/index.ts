@@ -277,7 +277,7 @@ export {
   type SessionRegistryOptions,
 } from "./sessionRegistry.js";
 export { streamIdleMs, isRateLimitError, isConnectivityError, setRateLimitFailoverProbe, type RateLimitFailoverProbe } from "./queryEngine.js";
-export { stripImagesForBlindModel, historyHasImages } from "./queryEngine.js";
+export { stripImagesForBlindModel, historyHasImages, COMPACTION_THRESHOLD_RATIO, COMPACTION_PIN_FILES, COMPACTION_PIN_FILE_CHARS, COMPACTION_PIN_TOTAL_CHARS } from "./queryEngine.js";
 export {
   loadContextCeiling,
   rememberContextCeiling,
@@ -572,6 +572,7 @@ export {
   exchangeAresCode,
   probeAresOauth,
   captureLoopbackCode,
+  freeLoopbackPort,
   normalizeGatewayBase,
   type AresSigninOptions,
 } from "./aresAccountAuth.js";

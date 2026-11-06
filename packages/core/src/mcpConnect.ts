@@ -309,7 +309,8 @@ export interface ConnectMcpResult {
 function listenWithFallback(server: Server, preferred: number): Promise<number> {
   return new Promise((resolve, reject) => {
     const onError = (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
+      // In use, or reserved by Windows: either way another port works.
+      if (err.code === "EADDRINUSE" || err.code === "EACCES") {
         server.removeListener("error", onError);
         server.once("error", reject);
         server.listen(0, "127.0.0.1", () => {

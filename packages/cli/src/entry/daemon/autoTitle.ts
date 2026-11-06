@@ -62,7 +62,11 @@ export function createAutoTitler(options: AutoTitlerOptions): (sessionId: string
       const snapshot = await loadSessionSnapshot(options.workspace, sessionId, { maxMessages: 12 });
       const lines: string[] = [];
       for (const message of snapshot.messages) {
-        const text = textOf((message as { content?: unknown }).content).replace(/data:image\/[^\s]+/g, "[image]").replace(/\s+/g, " ").trim();
+        // A surface intent carries its model-facing framing; the title should
+        // read what the owner did, not the tag.
+        const text = textOf((message as { content?: unknown }).content)
+          .replace(/^\[SURFACE INTENT · ([a-z0-9-]+) · [^\]]*\]\s*([\s\S]*?)\n\n\(The owner acted inside[\s\S]*$/, "(in the $1 surface) $2")
+          .replace(/data:image\/[^\s]+/g, "[image]").replace(/\s+/g, " ").trim();
         if (!text || (message.role !== "user" && message.role !== "assistant")) continue;
         lines.push(`${message.role === "user" ? "Owner" : "Agent"}: ${text.slice(0, 400)}`);
       }

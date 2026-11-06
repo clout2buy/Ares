@@ -58,7 +58,7 @@ dependencies = [
 
 [[package]]
 name = "ares-tauri"
-version = "0.68.2"
+version = "0.69.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -66,6 +66,8 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "webview2-com",
+ "windows",
  "windows-sys 0.61.2",
 ]
 

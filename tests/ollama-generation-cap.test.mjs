@@ -11,7 +11,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ollamaNumPredict } from "../packages/core/dist/providers/ollamaCloud.js";
+import { ollamaNumPredict, ollamaReasoningLevel } from "../packages/core/dist/providers/ollamaCloud.js";
 
 const ALLOWANCE = 8_192;
 
@@ -65,4 +65,12 @@ test("ARES_OLLAMA_NUM_PREDICT overrides, mirroring ARES_OLLAMA_NUM_CTX", () => {
     if (prev === undefined) delete process.env.ARES_OLLAMA_NUM_PREDICT;
     else process.env.ARES_OLLAMA_NUM_PREDICT = prev;
   }
+});
+
+test("GLM keeps a thinking channel when effort is off, or its reasoning lands in the reply", () => {
+  assert.equal(ollamaReasoningLevel("glm-5.3-flash", "off"), "low");
+  assert.equal(ollamaReasoningLevel("glm-5.3:cloud", "off"), "low");
+  assert.equal(ollamaReasoningLevel("glm-5.3-flash", "high"), "high");
+  assert.equal(ollamaReasoningLevel("qwen3-coder:480b-cloud", "off"), "off");
+  assert.equal(ollamaReasoningLevel("glm-5.3-flash", undefined), undefined);
 });

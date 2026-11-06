@@ -17,6 +17,7 @@ import type {
   PermissionMode,
 } from "@ares/protocol";
 import type { ToolCallContext, EngineToolEffectPolicy, EngineToolResult } from "@ares/core";
+import { GENUI_FORGE_MESSAGE, GENUI_OFF_MESSAGE, genuiEnabled, isAresSource } from "./genui.js";
 import {
   renderRepositoryInstructions,
   vaultAccessPrompt,
@@ -112,6 +113,9 @@ export interface RichToolContext extends ToolCallContext {
   todoStore?: import("./TodoWrite.js").TodoStore;
   /** Per-session registry of deferred (ToolSearch-loadable) tools. */
   deferredTools?: import("./ToolSearch.js").DeferredToolRegistry;
+  /** Read-only view of the runtime for the Introspect tool (the belt, the
+   *  plugin kernel, friction). Hosts that have no belt leave it out. */
+  introspect?: import("./Introspect.js").IntrospectContext;
 }
 
 export const SHELL_DEFAULT_TIMEOUT_MS = 120_000;
@@ -654,6 +658,15 @@ export function adaptToolForEngine(
           throw markPreEffectError(error);
         }
         if (!verdict.ok) throw preEffectToolError(verdict.message);
+      }
+      const browserAction = tool.schema.name === "Browser" ? (parsed as { action?: unknown } | null)?.action : undefined;
+      if ((browserAction === "preview" || browserAction === "explain") && genuiEnabled()) {
+        throw preEffectToolError(GENUI_FORGE_MESSAGE);
+      }
+      // GenUI off: no file tool writes into an Ares checkout, whatever the mode.
+      const fileTarget = (parsed as { file_path?: unknown } | null)?.file_path;
+      if ((tool.schema.name === "Edit" || tool.schema.name === "Write") && typeof fileTarget === "string" && !genuiEnabled() && isAresSource(fileTarget, ctx.workspace)) {
+        throw preEffectToolError(GENUI_OFF_MESSAGE);
       }
       let decision: PermissionDecision;
       try {

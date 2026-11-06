@@ -340,14 +340,16 @@ export class OllamaCloudPool {
         // the Anthropic-compat path above has always used: reasoning models need
         // headroom for the thinking block PLUS a visible reply, so the budget is
         // added, not shared.
-        num_predict: ollamaNumPredict(outputAllowance, req.reasoningLevel),
+        num_predict: ollamaNumPredict(outputAllowance, ollamaReasoningLevel(model, req.reasoningLevel)),
       },
       // Reasoning dial → native /api/chat "think" field. Ollama's documented think
       // enum is low|medium|high (plus a boolean) — NOT "max" — so clamp max→high
       // (mirrors openAIReasoningEffort) to avoid a 400 on models that validate it,
       // while still letting the owner's dial bite here. Gate on reasoningEnabled so
       // "off"/undefined omit think entirely (a present field re-enables thinking).
-      ...(req.reasoningLevel === "off"
+      ...(ollamaReasoningLevel(model, req.reasoningLevel) !== req.reasoningLevel
+        ? { think: true }
+        : req.reasoningLevel === "off"
         ? { think: false }
         : reasoningEnabled(req.reasoningLevel)
         ? { think: req.reasoningLevel === "xhigh" || req.reasoningLevel === "max" ? "high" : req.reasoningLevel === "minimal" ? "low" : req.reasoningLevel }
@@ -936,7 +938,7 @@ function buildAnthropicMessagesBody(
   // the thinking budget, so grow the ceiling to leave room for the visible reply.
   // Gate on reasoningEnabled: "off" must send NO thinking block (a present block,
   // even with a 0 budget, turns thinking back on / 400s on adaptive-only models).
-  const level = req.reasoningLevel;
+  const level = ollamaReasoningLevel(model, req.reasoningLevel);
   if (level !== undefined && reasoningEnabled(level)) {
     const budget = thinkingBudgetTokens(level);
     body.thinking = { type: "enabled", budget_tokens: budget };
@@ -982,6 +984,16 @@ function buildAnthropicMessagesBody(
  * with it, so bounding the runaway never starves the actual answer. Escape
  * hatch matches ARES_OLLAMA_NUM_CTX's shape for an operator who needs more.
  */
+/**
+ * GLM cannot stop reasoning. Told think:false it does the same reasoning in its
+ * reply instead: measured on glm-5.3-flash, the same request gave 38-49k visible
+ * chars and built past an instruction to ask first, against 269 visible chars and
+ * the question asked with thinking on. So off still gets a thinking channel here.
+ */
+export function ollamaReasoningLevel(model: string, level: ReasoningLevel | undefined): ReasoningLevel | undefined {
+  return level === "off" && /(^|[^a-z0-9])glm/i.test(model) ? "low" : level;
+}
+
 export function ollamaNumPredict(outputAllowance: number, level: ReasoningLevel | undefined): number {
   const raw = Number(process.env.ARES_OLLAMA_NUM_PREDICT);
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);

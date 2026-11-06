@@ -42,6 +42,20 @@ export interface AresEvent {
   name?: string;
   toolName?: string;
   status?: string;
+  /** surfaces_list / surface_revision / surface_post / surface_manifest /
+   *  surface_removed — the surface ledger and its live posts (docs/CREATOR-MODE-DESIGN.md). */
+  surfaces?: unknown[];
+  manifest?: unknown;
+  document?: unknown;
+  payload?: unknown;
+  mutations?: unknown[];
+  /** shell_go — drive the app; surface_share — between surfaces. */
+  target?: string;
+  topic?: string;
+  /** shell_layout — the owner's reshaped window. */
+  layout?: unknown;
+  /** surface_notice tone. */
+  tone?: string;
   /** plugins_list — plugin kernel status rows + recent maintenance runs. */
   plugins?: unknown[];
   recentMaintenance?: unknown[];

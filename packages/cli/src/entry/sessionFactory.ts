@@ -1168,6 +1168,8 @@ export async function createSessionWithSelection(
     detachedStartupRecovery: opts.detachedStartupRecovery ?? startupRecoveryMode(cachedUiSettings()) === "auto",
   });
   sessionRef = session;
+  // Without this a new chat never gets its loaded tools, GenUI's included.
+  deferredHolder.id = session.meta.id;
   shellRegistry.configureDurability({ kernel: sessionKernel, workspace: context.workspace });
   shellRegistry.registerSession(session.meta.id);
   runtime.onPermissionModeChanged = async (mode, opts) => {

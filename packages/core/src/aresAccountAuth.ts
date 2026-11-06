@@ -107,6 +107,25 @@ export async function probeAresOauth(base: string, fetchImpl: typeof fetch = fet
   }
 }
 
+/** A port this machine will really let us listen on. Windows can reserve whole
+ *  ranges (Hyper-V, WinNAT) that change across reboots, so a fixed port fails with
+ *  EACCES on some boots. The gateway accepts any loopback port, so take what's free. */
+export function freeLoopbackPort(preferred: number): Promise<number> {
+  const tryPort = (port: number) => new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(port, "127.0.0.1", () => {
+      const addr = probe.address();
+      const got = typeof addr === "object" && addr ? addr.port : port;
+      probe.close(() => resolve(got));
+    });
+  });
+  return tryPort(preferred).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "EACCES" || err.code === "EADDRINUSE") return tryPort(0);
+    throw err;
+  });
+}
+
 /** Spin up the one-shot loopback server and resolve the returned `code` once the
  *  browser redirect lands (state-validated). Self-destructs on hit/error/timeout. */
 export function captureLoopbackCode(
@@ -169,7 +188,7 @@ export interface AresSigninOptions {
  *  The caller persists the token into settings.aresGatewayToken. */
 export async function runAresAccountSignin(base: string, opts: AresSigninOptions = {}): Promise<{ token: string; base: string }> {
   const normalized = normalizeGatewayBase(base);
-  const port = opts.port ?? DEFAULT_PORT;
+  const port = opts.captureCode ? (opts.port ?? DEFAULT_PORT) : await freeLoopbackPort(opts.port ?? DEFAULT_PORT);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const state = randomBytes(16).toString("hex");
   const codeVerifier = randomBytes(32).toString("base64url");

@@ -122,6 +122,12 @@ export type StopReason =
   | "max_tokens"
   | "stop_sequence"
   | "interrupted"
+  // The provider's safety layer declined the whole turn (Anthropic's
+  // `stop_reason: "refusal"`). Distinct from "error" so the engine can
+  // self-heal: retry once with recalled-memory reminders stripped, since a
+  // poisoned auto-recall is the usual trigger — the user's own request was
+  // fine on the turn before memory landed in the prompt.
+  | "refusal"
   | "error";
 
 // ─── Turn Events (what QueryEngine yields to CLI/TUI) ───────────────────

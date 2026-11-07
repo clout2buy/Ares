@@ -518,6 +518,9 @@ export class AnthropicProvider implements Provider {
               oddStop = evt.delta.stop_reason === "refusal"
                 ? `Anthropic's ${details?.category ?? "safety"} safeguards stopped this reply.${details?.explanation ? ` ${details.explanation}` : ""}`.slice(0, 400)
                 : `The model stopped this reply: ${evt.delta.stop_reason}.`;
+              // Surface a refusal as its own stop reason so the engine can
+              // retry once with recalled memory stripped before giving up.
+              if (evt.delta.stop_reason === "refusal") stopReason = "refusal";
             }
             continue;
           }
@@ -584,8 +587,14 @@ export class AnthropicProvider implements Provider {
     }
 
     if (oddStop) {
+      // Carry the explanation in the committed message, but do NOT stream it as
+      // a text_delta here: a "refusal" stop may be retried by the engine with
+      // recalled-memory stripped, and streaming the safeguard line first would
+      // flash a dead-end reply the retry then replaces. The engine streams this
+      // text itself only when it decides not to retry (refusal), or always for
+      // any other odd stop.
       content.push({ type: "text", text: oddStop });
-      yield { type: "text_delta", text: oddStop };
+      if (stopReason !== "refusal") yield { type: "text_delta", text: oddStop };
     }
     const message: Message = {
       id: messageId || `msg_${Date.now().toString(36)}`,

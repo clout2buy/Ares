@@ -40,6 +40,15 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.69.3",
+    date: "November 2026",
+    title: "Sessions no longer stall out",
+    tagline: "When the model's safety layer declines a turn, Ares quietly retries without the recalled memory that tripped it, so a session keeps going instead of dead-ending.",
+    highlights: [
+      { icon: "🔁", title: "No more dead-ends", blurb: "If a reply is refused by the model's safety layer, Ares retries the turn once without the memory it just recalled — the usual culprit — so your session carries on instead of stopping cold.", tag: "Fixed" },
+    ],
+  },
+  {
     version: "0.69.2",
     date: "November 2026",
     title: "Lighter, more private, more capable",

@@ -2993,6 +2993,17 @@ export class QueryEngine {
       return { files, checksRun: ran, missing: missing.length ? missing : ["behavioral proof"] };
     };
 
+    // Self-heal budget for a provider refusal: a safety layer that declines the
+    // whole turn (Anthropic's `stop_reason: "refusal"`) is, in practice, tripped
+    // by a poisoned record surfacing through auto-recall (living memory, the
+    // Oricle pack, or the advisory thought) — not by the user's own request,
+    // which was fine the turn before memory landed in the prompt. On a refusal
+    // we strip those recalled-memory reminders from the pending prompt and give
+    // the model ONE more round; if it still declines (or there was no recalled
+    // memory to blame) the refusal explanation is surfaced as the reply.
+    const RECALLED_MEMORY_REMINDER_KEYS = new Set(["recall", "advisory", "oricle"]);
+    let refusalRetriesLeft = 1;
+
     turnLoop: for (let iter = 0; iter < maxIters; iter++) {
       // Honor a Stop at every iteration boundary — independent of provider
       // timing or whether a tool cooperated with its abort signal. Without this
@@ -3765,6 +3776,40 @@ export class QueryEngine {
       const toolBatchSteeringEpoch = this.steeringWakeEpoch;
       this.activeProviderAttempt = null;
       this.turnPhase = hasProposedTools ? "effect" : "boundary";
+      // ── Refusal self-heal ─────────────────────────────────────────────
+      // The provider's safety layer declined the whole turn. If recalled-memory
+      // reminders are riding this prompt and we have a retry left, strip them
+      // from the pending user message and give the model one more round — the
+      // refusal almost always traces to a poisoned auto-recall, not the user's
+      // request. Do NOT commit the refusal message or stream its text: the
+      // retry replaces it cleanly. If there is no recalled memory to strip, or
+      // the budget is spent, fall through and surface the explanation as today.
+      if (stopReason === "refusal" && refusalRetriesLeft > 0 && !this.liveSignal().aborted) {
+        const lastUser = [...this.messages].reverse().find((m) => m.role === "user");
+        const strip = lastUser?.content.filter(
+          (b) => b.type === "system_reminder" && b.key && RECALLED_MEMORY_REMINDER_KEYS.has(b.key),
+        ) ?? [];
+        if (lastUser && strip.length > 0) {
+          for (const b of strip) blockTokenMemo.delete(b);
+          lastUser.content = lastUser.content.filter((b) => !strip.includes(b));
+          refusalRetriesLeft--;
+          this.activeProviderAttempt = null;
+          iter--;
+          continue;
+        }
+      }
+      // A refusal we cannot or will not retry (no recalled memory to blame, or
+      // the budget is spent) surfaces its explanation as the reply — the
+      // provider withheld the text_delta so the engine streams it here, once.
+      if (stopReason === "refusal") {
+        const text = assistantMessage.content
+          .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+          .map((b) => b.text)
+          .join("")
+          .trim();
+        if (text) yield { type: "text_delta", text };
+      }
+
       // A message emptied entirely by withholding its only (partial) tool call
       // never reaches history: providers reject empty content arrays, and
       // there is nothing in it to resume from — the retry replays cleanly.

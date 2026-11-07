@@ -526,6 +526,9 @@ async function mindBeforeTurn(live: LiveSession, userMessage: string, tenant: Tu
       livingMemoryFile: live.context.mind.memoryFile,
       openLiving: livingViaMnemosyne ? async () => livingViaMnemosyne : undefined,
       shouldRecall: intent.shouldRecall,
+      // Cross-session isolation: durable about-you facts cross; this session's
+      // own working state stays with it (see unifiedRecall sessionId).
+      sessionId: live.session.meta.id,
       limit: 5,
       itemChars: LIVE_MEMORY_ITEM_CHARS,
       blockChars: LIVE_MEMORY_BLOCK_CHARS,

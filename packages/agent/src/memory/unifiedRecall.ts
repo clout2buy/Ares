@@ -116,17 +116,19 @@ export interface VectorRecallConfig {
   useOllama?: boolean;
 }
 
-/** Minimal shape the unified interface needs from a living-memory store. */
+/** Minimal shape the unified interface needs from a living-memory store.
+ *  `tags`/`source` are read for cross-session isolation (see sessionId). */
+type RecalledNode = { content: string; kind?: string; id?: string; tags?: readonly string[]; source?: string };
 export interface LivingRecaller {
   remember(
     cue: string,
     opts?: { limit?: number; scope?: string },
-  ): Promise<Array<{ node: { content: string; kind?: string; id?: string }; viaAssociation?: boolean }>>;
+  ): Promise<Array<{ node: RecalledNode; viaAssociation?: boolean }>>;
   /** Read-only recall (no reinforce/persist). Used when `reinforce: false`. */
   peek?(
     cue: string,
     opts?: { limit?: number; scope?: string },
-  ): Array<{ node: { content: string; kind?: string; id?: string }; viaAssociation?: boolean }> | Promise<Array<{ node: { content: string; kind?: string; id?: string }; viaAssociation?: boolean }>>;
+  ): Array<{ node: RecalledNode; viaAssociation?: boolean }> | Promise<Array<{ node: RecalledNode; viaAssociation?: boolean }>>;
 }
 
 // Live turns recall DISTILLED knowledge, never raw episodic replay. Episodic
@@ -135,6 +137,26 @@ export interface LivingRecaller {
 // "why are you talking about my vault?" bug). Episodic still feeds consolidation
 // into semantic — it just isn't injected live.
 const RECALLABLE_LIVE_KINDS: ReadonlySet<string> = new Set(["semantic", "procedural", "insight", "belief"]);
+
+// The curated types that are genuinely ABOUT THE OWNER and so belong to every
+// session, like a global CLAUDE.md: who they are, how they want work done, and
+// where things live. `type:project` is deliberately excluded — it is one
+// session's working state and must not recall into another.
+const CROSS_SESSION_SHARED_TYPES: ReadonlySet<string> = new Set(["type:user", "type:feedback", "type:reference"]);
+
+/** Whether a distilled memory may cross from another session into this one.
+ *  Durable about-you facts always cross; everything else recalls only back into
+ *  the session that produced it (by its `session:<id>` tag, or its source). */
+function crossesSessions(node: { tags?: readonly string[]; source?: string }, sessionId: string): boolean {
+  const tags = node.tags ?? [];
+  // Durable, shared-everywhere layers.
+  if (node.source === "synthesis" || node.source === "manual") return true;
+  if (tags.some((t) => CROSS_SESSION_SHARED_TYPES.has(t))) return true;
+  // Otherwise it is working state: only its own session may recall it.
+  if (node.source === sessionId) return true;
+  if (tags.includes(`session:${sessionId}`)) return true;
+  return false;
+}
 
 export interface UnifiedRecallOptions {
   query: string;
@@ -164,6 +186,18 @@ export interface UnifiedRecallOptions {
    * scoping existed.
    */
   scope?: string;
+  /**
+   * The current session's id. When set, cross-session isolation applies: only
+   * DURABLE facts about the owner cross from other sessions — the curated
+   * `type:user` / `type:feedback` / `type:reference` facts, consolidated
+   * `synthesis` insights, and anything written by hand (`manual`). A session's
+   * own working state (`type:project` and any auto-distilled fact) recalls only
+   * back into the session that produced it (matched by its `session:<id>` tag
+   * or `source`). This is Ares's "like Claude Code" memory model: the global
+   * about-you memory is shared, one chat's working notes never bleed into
+   * another. Absent (CLI, eval, pre-session contexts) = no isolation, unchanged.
+   */
+  sessionId?: string;
   /**
    * Whether surfacing memories should reinforce them (recall's normal "use makes
    * it stick" behavior). Default true for live turns. Set false for read-only
@@ -205,6 +239,10 @@ export async function unifiedRecallForTurn(opts: UnifiedRecallOptions): Promise<
       for (const r of entries) {
         // Skip raw episodic replay — only distilled knowledge informs a live turn.
         if (r.node.kind && !RECALLABLE_LIVE_KINDS.has(r.node.kind)) continue;
+        // Cross-session isolation: a fact crosses from another session only if
+        // it is durable about-you memory; a session's own working state stays
+        // with it. See the sessionId option for the full contract.
+        if (opts.sessionId && !crossesSessions(r.node, opts.sessionId)) continue;
         const key = normalize(r.node.content);
         if (!key || seen.has(key)) continue;
         seen.add(key);

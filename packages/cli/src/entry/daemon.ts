@@ -1260,7 +1260,7 @@ export async function daemonCommand(args: ParsedArgs): Promise<number> {
     if (facts.length === 0) return;
     try {
       const store = await MemoryStore.open(live.context.mind.memoryFile);
-      const res = await mergeDurableFacts(store, facts);
+      const res = await mergeDurableFacts(store, facts, { sessionId: sid });
       if (res.added > 0) {
         tagEmit(undefined, { type: "lifecycle", event: { kind: "reflected", added: res.added, facts: res.addedFacts.slice(0, 3) } });
       }

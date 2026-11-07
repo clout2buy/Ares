@@ -40,6 +40,16 @@ export interface ChangelogEntry {
 // from the "earlier updates" strip.
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.69.4",
+    date: "November 2026",
+    title: "One chat can't leak into another",
+    tagline: "Memory now works like it should: what Ares knows about you follows you everywhere, but one conversation's working notes stay in that conversation.",
+    highlights: [
+      { icon: "🧠", title: "Memory that stays about you", blurb: "Who you are, how you like to work, and where your things live carry across every chat. What a single conversation was doing stays with that conversation instead of surfacing in unrelated ones.", tag: "Fixed" },
+      { icon: "🔒", title: "No cross-chat bleed", blurb: "A session no longer pulls another session's working state into its prompt — which also stops the stray refusals that bleed could trigger.", tag: "Safer" },
+    ],
+  },
+  {
     version: "0.69.3",
     date: "November 2026",
     title: "Sessions no longer stall out",

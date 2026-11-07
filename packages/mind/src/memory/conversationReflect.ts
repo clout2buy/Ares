@@ -94,7 +94,7 @@ export interface MergeFactsResult {
 export async function mergeDurableFacts(
   store: ReflectStoreLike,
   facts: ReadonlyArray<DurableFact>,
-  opts: { minImportance?: number } = {},
+  opts: { minImportance?: number; sessionId?: string } = {},
 ): Promise<MergeFactsResult> {
   const router = new MemoryRouter(store as RouterStoreLike);
   // A quote of the owner is a log line, not a fact (MEMORY.md field report,
@@ -110,6 +110,11 @@ export async function mergeDurableFacts(
         "conversation",
         fact.kind,
         `type:${curatedTypeOf(fact.kind)}`,
+        // Stamp the session that produced this fact. A `project`-typed fact
+        // (ongoing-work state) recalls only back into its own session; the
+        // durable `user`/`feedback`/`reference` types cross to every session.
+        // This is how one chat's working state stops leaking into another.
+        ...(opts.sessionId ? [`session:${opts.sessionId}`] : []),
         ...(typeof fact.why === "string" && fact.why.trim() ? [`why:${fact.why.replace(/\s+/g, " ").trim().slice(0, 240)}`] : []),
       ],
       source: "conversation-reflection",

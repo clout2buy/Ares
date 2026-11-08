@@ -1118,33 +1118,84 @@ honest "is this better" answer; everything after is capability, not proof.
 
 ---
 
-## 22. Two ways to use this
+## 22. Oruna runs on DevoEngine
 
-**Whole engine.** Build DevoEngine as specified and embed it. This is the
-right call for a product that will run many agents for many hours on many
-repositories and needs the durability, parallelism and observability to be
-load-bearing.
+Oruna is the agent; DevoEngine is its runtime. The current `core/` (949
+lines, one loop) is retired, not patched. What survives from it is the part
+that was never engine: identity, laws, memory estate, self-written skills,
+the daily pulse, the doors. Each becomes configuration or a plugin on a seam
+this document already defines. Nothing in the kernel, the step loop or the
+compiler is Oruna-specific.
 
-**Transplants into a small loop.** A deliberately small agent (one loop,
-laws, self-written skills, under a thousand lines) should not become
-DevoEngine. It can absorb the three ideas that carry most of the long-horizon
-gain, each about a day of work and none of which changes its shape:
+### 22.1 What carries over, and where it plugs in
 
-1. **Tasks with acceptance before done.** A plan entry carries a check
-   command; the loop runs it when the model says done; red means not done.
-   No scheduler, no graph, no judge: just the contract that status comes from
-   evidence.
-2. **Demote, do not summarise.** When the window is full, move the oldest
-   rounds into the memory store the loop already has, indexed by step, and
-   give the model one `recall(query|id)` tool. Nothing is lost; the summariser
-   is deleted.
-3. **A wait verb.** `wait(timer|process|path)` parks the run and wakes it with
-   a payload. Sleep-polling disappears.
+| Old Oruna | Engine seam | Notes |
+|---|---|---|
+| `laws.py`: five laws, pinned hash, STOP file, unattended guard | **Policy** (§12): an `Approver` chain and a permission mode `oruna-unattended` | Laws stay text with a hash printed in the system prompt. The guard becomes a classifier that returns deny for destructive shell and out-of-home writes when no approver is attached. STOP is the owner pause, checked at every boundary. |
+| `oricle.py`: pack before, attest after, remember, recall, task cards, reflect, episodes | **Memory plugin** (§11) and a **knowledge store backend** (§6.2) | Oricle becomes the cross-run memory and the backend for demoted rounds and handoffs. The per-run knowledge index stays local (SQLite FTS) for speed; bodies are committed to the estate so they outlive the run. `pack` is the recall section of the compiled tail; `attest` runs at step end with the ids the model cited. |
+| task cards | **Work graph** (§4) | A card is a task. `check` is acceptance. Status comes from evidence. Oricle keeps the durable copy so the greeting can say what is open. |
+| `skills.py`: write_skill with a mandatory test, live on the next call | **Tool contribution plugin** (§8.1) | Same contract: one file, docstring, `ARGS`, `run`, `test`. Loaded into the deferred tier; discoverable through `ToolSearch`; never shadowing a core tool. The test still runs before acceptance, inside the tool pipeline so it is admitted and settled like any effect. |
+| `prompt.py` rules | **Craft core overlay** (§15) | Oruna's voice and the lines about remembering and growing become the agent's standing rules layer. The engineering rules come from the craft core, which is stricter and incident-backed. |
+| `--pulse` | **Standing order** (§14.3) | A daily run with objective `PULSE`, unattended mode, a budget, and the interrupt budget on `message_owner`. The "do not pick the same option three pulses in a row" rule reads the last three pulse episodes from Oricle at compile time. |
+| `--serve` (`POST /turn`, `GET /inbox`) | **Host** (§14.2) | Kept as a thin adapter over the gateway: `/turn` creates or continues a run and returns the final text; `/inbox` reads the outbox of `message_owner` notes. The token stays. |
+| terminal door and `theme.py` | **Host** | A CLI client of the SDK. Greeting comes from Oricle's last episode and open tasks, as now. |
+| `update.py` | unchanged | Packaging concern, outside the engine. |
+| `jobs.py`, `files.py`, `tools.run_shell` | **replaced** by the belt (§8.3) | The belt's Read/Edit/Write/Bash/jobs carry every incident rule; the old ones carry the 20,000-character truncation bug (see `ORUNA-LEGACY.md`). |
+| `main.trim` | **replaced** by demotion (§6.4) | Nothing is deleted. |
+| `main.ask` | **replaced** by providers (§13) | Retries, stall guard, ceilings, caching. |
 
-After those three, the next most valuable transplant is the Edit rule: when a
-file's last-known hash differs from disk and its Read is no longer in the
-window, re-read the match region before matching. It is a few lines and it
-removes the single most common long-run edit failure.
+### 22.2 Oruna profile (config, not code)
+
+```toml
+[agent]
+name = "oruna"
+home = "~/.oruna"
+lanes.worker = "openrouter:anthropic/claude-sonnet-5-5"   # or deepseek; any OpenAI-compatible endpoint
+lanes.reader = "openrouter:anthropic/claude-haiku-5-5"
+rules = "laws.md"                                          # hash printed in the system prompt
+
+[policy]
+mode_attended = "workspace-write"
+mode_unattended = "oruna-unattended"      # deny destructive shell, writes outside home, money, accounts, non-owner contact
+stop_file = "~/.oruna/STOP"
+permission_wait_ms = 300000
+
+[memory]
+backend = "oricle"                        # http://127.0.0.1:7441, token from ~/.oricle/net-token
+pack_tokens = 3000
+demote_to_estate = true
+
+[standing_orders.pulse]
+cron = "0 5 * * *"
+objective_file = "pulse.md"
+unattended = true
+budget.max_tool_calls = 40
+budget.max_wall_clock = "30m"
+interrupts_per_run = 3
+
+[hosts]
+serve.port = 7442
+serve.token_env = "ORUNA_TOKEN"
+```
+
+### 22.3 What Oruna gains on day one
+
+Durable runs that survive a restart of `oruna-serve`; a work graph with
+acceptance instead of self-reported task cards; demotion to Oricle instead of
+deleting history at 400k characters; an Edit that cannot truncate a file;
+shells that cannot wedge on an orphaned pipe; jobs that survive the process;
+`wait_for` so the pulse can start a build and come back; provider retries and
+learned ceilings; the guard table; prompt caching, because the pack rides the
+tail message instead of rewriting the system prompt every turn.
+
+### 22.4 Build order for Oruna specifically
+
+Follow §20. The Oruna profile and the Oricle plugin are part of phase 3
+(the compiler needs a backend to demote into) and the laws classifier is
+part of phase 2 (the belt needs a policy). The `--serve` and terminal
+adapters come last. Until phase 2 ships, the live `oruna-serve` on doingbox
+should at least get the `edit_file` fix in `ORUNA-LEGACY.md`, because it is
+destroying files today.
 
 ---
 

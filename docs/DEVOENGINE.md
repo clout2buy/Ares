@@ -254,6 +254,27 @@ When a worker marks a task done the runtime:
 3. requires a **handoff** (§5.6) that addresses `assertion` if present;
 4. records evidence and emits `task_done`.
 
+**Acceptance is not the worker's to weaken.** A model under grind pressure
+will write a trivially green check. So:
+
+- `acceptance.check` must be a command from the check grammar whose runner is
+  one of the detected project checks (§7.3) or a known test runner; arbitrary
+  shell is refused at `Plan` validation.
+- A check that names a test file **created or modified by the same task** is
+  `provisional`: it counts only after the `judge` lane reviews the test's
+  diff against the task's title, notes and assertion and answers "tests the
+  claim". The judge sees the diff, not the worker's prose.
+- The task's shadow diff is scanned for weakened tests: deleted test files,
+  added skip/xfail/`.only`/`it.skip` markers, assertions removed. Any hit
+  marks the acceptance `suspect`; the task cannot close without the judge
+  and a note explaining the change. Project-wide, the same scan feeds the
+  run's work status (§6.7): a green suite after a weakened test is not
+  `verified`.
+- Acceptance can be **tightened** by a worker (adding a check) without
+  review; it can only be **loosened** by the planner lane with a
+  `graph_changed{op: loosen_acceptance, reason}` event, and never by the
+  worker currently assigned to the task.
+
 The run completes when every non-cancelled task is done and the root
 acceptance (if any) passes. Work status for the run is derived from evidence
 (§6.7), never from the final message.
@@ -389,21 +410,34 @@ context as one message and stored as knowledge.
 [system]  craft core | provider overlay | standing rules | tool doctrine (core tier)
           | project notes (pinned) | repository instructions | environment
           -- byte-stable for the whole run --
-[user]    ┌ compiled sections (keyed, replace-in-place each step) ┐
-          │  goal + constraints (verbatim)                          │
-          │  work graph view (§4.4)                                 │
-          │  knowledge: relevant facts for this task (§6.3)         │
-          │  recall: prior-run memory (§11)                          │
-          │  reminders: guards, acceptance results, recovery notes  │
-          └────────────────────────────────────────────────────────┘
-          the pending user message (if any)
-[window]  the last K rounds verbatim (assistant + tool results)
+[window]  the last K rounds verbatim (assistant + tool results), oldest first
+          -- mutated only by demotion / rung clears, from the front --
+[tail]    the final user message of the prompt, rebuilt every step:
+          ┌ tool_result blocks for the last round (if any)           ┐
+          │ compiled sections (keyed):                                │
+          │   goal + constraints (verbatim)                           │
+          │   work graph view (§4.4)                                  │
+          │   knowledge: relevant facts for this task (§6.3)          │
+          │   recall: prior-run memory (§11)                          │
+          │   reminders: guards, acceptance results, recovery notes   │
+          │ the pending user text (if any)                            │
+          └──────────────────────────────────────────────────────────┘
 ```
 
-Compiled sections are keyed `system_reminder` blocks on the pending user
-message; the previous instance is removed anywhere in history (keyed
-replacement), placed after any tool_result blocks (the Anthropic 400
-incident). The system prompt never changes mid-run.
+**Placement rule (this is what makes principle 9 hold).** Compiled sections
+exist in exactly one place: the tail message of the outbound prompt. They are
+rendered at compile time and are **not stored in history**; the committed
+history holds only the tool_results and the user text. Nothing is ever
+removed from earlier messages to make room for a new instance, so the
+window's cache front moves only when demotion or a rung clear changes it
+from the front. The tail message changes every step, which is exactly the
+cost every harness already pays for a new user turn and is what the rolling
+Anthropic breakpoint is for. Sections come after any tool_result blocks in
+that message (the Anthropic 400 incident). For forensics the compiler logs a
+`context_compiled{seq, section_hashes, tokens}` event, not the bodies; the
+replay harness recompiles deterministically from the log.
+
+The system prompt never changes mid-run.
 
 ### 6.2 The knowledge store
 
@@ -566,13 +600,24 @@ Runtime services the compiler and tools draw on:
 
 ### 7.4 Worktrees for parallel workers
 
-A parallel worker gets a copy-on-write worktree (`.devo/worktrees/<task>`):
-reflink copy excluding `.git`, `.devo`, `node_modules`; `node_modules`
-materialised with reflink, never hard-linked; external symlinks fail closed.
+Inside a git repository a parallel worker gets a **plain git worktree**
+(`git worktree add --detach .devo/worktrees/<task> <base>`), which already
+handles `.git` exclusion, ignores, and cleanup, and costs a checkout rather
+than a copy. Dependency directories (`node_modules`, `.venv`, `target`) are
+not tracked, so they are linked in per ecosystem: a symlink where the
+toolchain tolerates it, a reflink copy where the filesystem supports it
+(btrfs, xfs, APFS), and otherwise a fresh install in the worktree, which is
+reported in the task's notes as a cost. Reflink is an optimisation, never a
+requirement: on ext4 the design still works, it just copies or reinstalls.
+
+Outside git, a copy-on-write directory copy is used, excluding `.devo`, with
+external symlinks failing closed.
+
 At task close, the worker's shadow diff is applied to the base as one CAS
 transaction against the base hashes recorded at fork. A conflict reopens the
 task with the conflicting paths in notes and the worker's diff kept as a
-`handoff` fact.
+`handoff` fact. Worktrees are removed after a successful merge and kept (and
+named in the run's end report) after a conflict.
 
 ---
 
@@ -1001,22 +1046,28 @@ so the riskiest claim (the compiler beats the transcript) is proven early.
 
 1. **Kernel + projections + snapshots + mock provider** (weeks 1–2).
    Deliverable: a run that survives SIGKILL at any point with a trivial belt.
-2. **Worker step loop + guards + providers + ladders** (weeks 3–4).
-   Deliverable: a single-task coding run with Read/Edit/Write/Grep/Glob/Bash
-   on Anthropic; conformance subset green; guard matrix green.
-3. **Context compiler + knowledge + demotion + recall** (weeks 5–6).
+2. **Worker step loop + guards + providers + ladders + the coding belt**
+   (weeks 3–7). This is most of a harness: Read/Edit/Write/Grep/Glob/Bash with
+   every rule in §8.3, the shell runner and durable jobs, Anthropic with
+   caching and self-heals, the retry and stall ladders, the full guard
+   matrix. Deliverable: a single-task coding run on Anthropic; conformance
+   subset green; guard matrix green.
+3. **Context compiler + knowledge + demotion + recall** (weeks 8–12).
    Deliverable: the long-horizon benchmark's token and lossless-recall
-   criteria met against the mock.
-4. **Work graph + scheduler + acceptance + handoffs + shadow history**
-   (weeks 7–8). Deliverable: a 50-task scripted run completes with
-   evidence-derived status; rewind works.
+   criteria met against the mock. **This is the milestone that proves the
+   thesis; stop and evaluate here before committing to the rest.**
+4. **Work graph + scheduler + acceptance + judge vetting + handoffs + shadow
+   history** (weeks 13–16). Deliverable: a 50-task scripted run completes
+   with evidence-derived status; rewind works.
 5. **Parallel workers + worktrees + waits + failure protocol + learned fixes**
-   (weeks 9–10). Deliverable: parallel merge tests; the 10-minute wait at zero
-   tokens.
+   (weeks 17–19). Deliverable: parallel merge tests; the 10-minute wait at
+   zero tokens.
 6. **Children, memory carry-forward, policy chain, gateway, SDK polish,
-   telemetry and replay harness** (weeks 11–12).
+   telemetry and replay harness** (weeks 20–24).
 
-Twelve weeks for one strong engineer with review; six with two.
+About six months for one strong engineer with review, three to four with two.
+The first twelve weeks deliver phases 1 to 3 and the benchmark, which is the
+honest "is this better" answer; everything after is capability, not proof.
 
 ---
 
@@ -1028,9 +1079,18 @@ Twelve weeks for one strong engineer with review; six with two.
    by the benchmark's lossless-recall probe. If ranking is weak the cost is a
    `recall` call, not lost state.
 2. **Model discipline with `Plan` and `Note`.** The runtime auto-fills files,
-   checks, failures and handoffs; constraints from the user are captured by
-   the runtime from the admitted input; only decisions depend on the model.
-   The run-stall guard notices lapses. Craft core makes it doctrine.
+   checks, failures and handoffs; only decisions depend on the model. The
+   run-stall guard notices lapses. Craft core makes it doctrine.
+   **Constraints are not extracted by the runtime.** A runtime cannot pull
+   "old endpoints behind a flag" out of prose. Two things happen instead:
+   (a) the objective and every later user message are kept **verbatim** as
+   the base constraint set and always rendered; (b) on run start and on every
+   admitted user input, a bounded `planner`-lane extraction step produces a
+   `constraints_extracted{items, source_input}` event whose items are shown
+   next to the verbatim text, each citing the sentence it came from. The
+   extraction can be wrong; the verbatim text cannot. The model may add
+   constraints via `Plan`; it may not delete extracted ones, only mark them
+   `disputed` with a reason, which the planner lane resolves.
 3. **Parallel workers on real repositories.** Scopes declared wrong cause
    merge conflicts; the design reopens the task rather than guessing.
    Default is 1 worker; fan-out is opt-in per run.
@@ -1042,12 +1102,56 @@ Twelve weeks for one strong engineer with review; six with two.
 6. **Licence.** Ares is AGPL-3.0-only. DevoEngine is a new implementation
    informed by Ares's design and incident history. If source is copied, AGPL
    applies to the result. Decide before the first commit.
+7. **Windows.** Deferred, not ignored, and it matters because development
+   happens on Windows. The abstractions that have to hold: `ProcessOwner`
+   (POSIX process groups; Windows Job Objects with `KILL_ON_JOB_CLOSE`);
+   the shell contract (bash on POSIX; PowerShell with the garrison's
+   `-EncodedCommand` and `.ps1` spill rules on Windows); path normalisation
+   (case-insensitive keys, separator folding) in stamps, knowledge and
+   scopes; hash-based stamps rather than mtime (16 ms granularity); shadow
+   commits through a shadow index, which git for Windows supports, with the
+   20 s bound mattering more on NTFS; worktrees via `git worktree` (works)
+   with symlinked dependency directories replaced by junctions or installs.
+   None of this changes the design; it changes which implementation of each
+   seam is loaded. Phase 2 should build the POSIX implementations with the
+   Windows ones as explicit stubs so the seams are real from the start.
+
+---
+
+## 22. Two ways to use this
+
+**Whole engine.** Build DevoEngine as specified and embed it. This is the
+right call for a product that will run many agents for many hours on many
+repositories and needs the durability, parallelism and observability to be
+load-bearing.
+
+**Transplants into a small loop.** A deliberately small agent (one loop,
+laws, self-written skills, under a thousand lines) should not become
+DevoEngine. It can absorb the three ideas that carry most of the long-horizon
+gain, each about a day of work and none of which changes its shape:
+
+1. **Tasks with acceptance before done.** A plan entry carries a check
+   command; the loop runs it when the model says done; red means not done.
+   No scheduler, no graph, no judge: just the contract that status comes from
+   evidence.
+2. **Demote, do not summarise.** When the window is full, move the oldest
+   rounds into the memory store the loop already has, indexed by step, and
+   give the model one `recall(query|id)` tool. Nothing is lost; the summariser
+   is deleted.
+3. **A wait verb.** `wait(timer|process|path)` parks the run and wakes it with
+   a payload. Sleep-polling disappears.
+
+After those three, the next most valuable transplant is the Edit rule: when a
+file's last-known hash differs from disk and its Read is no longer in the
+window, re-read the match region before matching. It is a few lines and it
+removes the single most common long-run edit failure.
 
 ---
 
 ## Appendix A. Event kinds
 
-`input_admitted`, `run_start`, `step_start`, `provider_attempt_started`,
+`input_admitted`, `constraints_extracted`, `context_compiled`, `run_start`,
+`step_start`, `provider_attempt_started`,
 `provider_attempt_superseded`, `provider_attempt_effects_skipped`,
 `steer_routed`, `message_done`, `tool_admitted`, `tool_start`,
 `tool_settled`, `tool_end`, `tool_error`, `permission_request`,
@@ -1055,6 +1159,7 @@ Twelve weeks for one strong engineer with review; six with two.
 `window_demoted{rounds, epoch}`, `window_cleared{tier, ids}`,
 `knowledge_added{kind, id}`, `graph_changed{op, task}`, `task_ready`,
 `task_started`, `task_done{evidence}`, `task_blocked{reason}`,
+`acceptance_provisional{task}`, `acceptance_suspect{task, reason}`,
 `handoff{task, body}`, `worker_started`, `worker_finished`,
 `worktree_forked`, `worktree_merged{conflicts}`, `shadow_commit{tree}`,
 `rewound`, `wait_started{kind}`, `wake{payload}`, `guard_fired{name}`,
@@ -1076,7 +1181,7 @@ threshold.
 |---|---|---|
 | Abort armed before turn_start, reminders, compaction | Stop looked dead during prep | Kept: cancel token at every boundary (§5.1) |
 | Reminders after the last tool_result block | Anthropic 400 re-sent every retry, bricked session | Kept (§6.1) |
-| Keyed reminders replace, never stack | Reminders stacked | Kept: compiled sections are keyed (§6.1) |
+| Keyed reminders replace, never stack | Reminders stacked | Strengthened: compiled sections live only on the outbound tail message and are never stored in history, so there is nothing to replace and no cache front to move (§6.1) |
 | Projection committed before informational reminder | Crash resumed at larger footprint | Kept: demotion epoch first (§6.4) |
 | Context checked every iteration | Mid-turn growth | Kept (§5.1 step 4) |
 | Sticky top-rung cut | Exact trimming re-billed ~120k per call | Kept (§6.5) |

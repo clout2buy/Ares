@@ -304,17 +304,23 @@ test("ares-anthropic: the in-process login is driven through the same routes and
     return new Response(JSON.stringify({ access_token: "ACC-TOKEN-1", refresh_token: "REF-TOKEN-1", expires_in: 3600, scope: "user:inference" }), { status: 200, headers: { "content-type": "application/json" } });
   };
   const r = await rig(t, { anthropicFetch });
+  // Default for the phone: Claude's code page (works in a real Safari sheet, Google sign-in included).
   const start = await r.call("POST", "/gateway/providers/login", { id: "ares-anthropic", v: 2, force: true });
-  assert.equal(start.body.state, "open");
-  assert.equal(start.body.intercept.redirectPrefix, "http://localhost:53692/callback");
+  assert.equal(start.body.state, "paste");
+  assert.equal(start.body.intercept, undefined);
   assert.equal((await r.provider("ares-anthropic")).state, "login_in_progress");
+  assert.equal((await r.provider("ares-anthropic")).method, "paste");
   assert.equal((await r.call("POST", "/gateway/providers/login", { id: "ares-anthropic", v: 2 })).status, 409);
   const u = new URL(start.body.url);
   assert.equal(u.searchParams.get("client_id"), "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
-  const done = await r.call("POST", "/gateway/providers/complete", { pollId: start.body.pollId, callbackUrl: `http://localhost:53692/callback?code=AUTHCODE123456&state=${u.searchParams.get("state")}` });
+  assert.equal(u.searchParams.get("redirect_uri"), "https://console.anthropic.com/oauth/code/callback");
+  assert.equal(await portOpen(53692), false, "no loopback listener for a paste sign-in");
+  const done = await r.call("POST", "/gateway/providers/complete", { pollId: start.body.pollId, code: `AUTHCODE123456#${u.searchParams.get("state")}` });
   assert.equal(done.body.state, "signed_in");
   assert.equal(exchanges.length, 1);
   assert.equal(exchanges[0].code, "AUTHCODE123456");
+  assert.equal(exchanges[0].redirect_uri, "https://console.anthropic.com/oauth/code/callback");
+  assert.ok(!r.logs.join("\n").includes("AUTHCODE123456"), "the pasted code is never logged");
   const tokens = await loadAnthropicTokens();
   assert.equal(tokens.accessToken, "ACC-TOKEN-1");
   assert.equal(await resolveAnthropicAccessToken(anthropicFetch), "ACC-TOKEN-1");
@@ -326,10 +332,22 @@ test("ares-anthropic: the in-process login is driven through the same routes and
   assert.equal(await loadAnthropicTokens(), null);
 });
 
-test("ares-anthropic: cancel closes the listener on 53692", async (t) => {
-  const r = await rig(t, { anthropicFetch: async () => new Response("{}", { status: 400 }) });
+test("ares-anthropic: a wrong pasted code fails the attempt with the exchange's reason, nothing stored", async (t) => {
+  const r = await rig(t, { anthropicFetch: async () => new Response("bad code", { status: 400 }) });
   const start = await r.call("POST", "/gateway/providers/login", { id: "ares-anthropic", v: 2, force: true });
+  assert.equal(start.body.state, "paste");
+  const done = await r.call("POST", "/gateway/providers/complete", { pollId: start.body.pollId, code: "AUTHCODE123456#not-the-state" });
+  assert.equal(done.body.state, "failed");
+  assert.match(done.body.error, /state mismatch/i);
+  assert.equal(await loadAnthropicTokens(), null);
+  assert.equal((await r.provider("ares-anthropic")).state, "signed_out");
+});
+
+test("ares-anthropic: loopback on request still listens on 53692, and cancel closes it", async (t) => {
+  const r = await rig(t, { anthropicFetch: async () => new Response("{}", { status: 400 }) });
+  const start = await r.call("POST", "/gateway/providers/login", { id: "ares-anthropic", v: 2, force: true, method: "loopback" });
   assert.equal(start.body.state, "open");
+  assert.equal(start.body.intercept.redirectPrefix, "http://localhost:53692/callback");
   assert.ok(await portOpen(53692));
   const c = await r.call("POST", "/gateway/providers/cancel", { pollId: start.body.pollId });
   assert.equal(c.body.state, "failed");

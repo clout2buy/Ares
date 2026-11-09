@@ -137,6 +137,12 @@ Built from an allowlist, never from the garrison's own environment: `PATH`,
 `TERM=xterm-256color`, `COLORTERM=truecolor`, `LANG=en_US.UTF-8`. Nothing
 starting with `ARES_`, no APNS keys, no OAuth client secrets, no `EXPO_TOKEN`,
 no provider keys. Extra names can be opted in with `ARES_TERMINAL_ENV_PASS=A,B`.
+`BROWSER` points at `~/.ares/terminal/bin/ares-open` (also first on `PATH` as
+`xdg-open`): a box has no browser, so "open a browser" prints the link into the
+shell for the phone to tap. A sign-in link that names a loopback redirect
+(Claude Code, Codex) is then finished by the phone itself (the Shell tab's
+"Sign in and finish automatically" listens on that port on the phone and sends
+the redirect back to the box with curl), instead of the CLI's copy-a-code page.
 The tmux server and the pane run under `env -i`. This is hygiene, not a
 boundary: the shell is the same Unix user as the garrison and can read
 `~/.ares` (including the gateway token) and `sudo` to anything.

@@ -29,14 +29,14 @@ and cannot be refreshed.
 
 ## POST /gateway/providers/login  `{ id, v: 2, method? }`
 
-`method` is optional: `"device"` (where the CLI has a device flow, today `codex`) or `"paste"` (force the
-manual flow). Answers, by `state`:
+`method` is optional: `"device"` (where the CLI has a device flow, today `codex`), `"paste"` (force the
+code-page flow) or `"loopback"` (force the redirect flow where paste is the default). Answers, by `state`:
 
 | state | body | what the phone does |
 |---|---|---|
-| `open` | `{ state, id, url, pollId, intercept: { redirectPrefix } }` | open `url` in an in-app auth session (ASWebAuthenticationSession-style). When the navigation is about to go to a URL starting with `redirectPrefix`, cancel it and `POST /complete { pollId, callbackUrl }`. |
+| `open` | `{ state, id, url, pollId, intercept: { redirectPrefix } }` | open `url` in Safari. The provider ends on a URL starting with `redirectPrefix` (the box's own localhost, which the phone cannot load): the person copies that address back into the app, which `POST /complete { pollId, callbackUrl }`. An embedded web view that caught the redirect by itself used to be the way, but Google's sign-in popup does not run inside one, so the phone no longer embeds. |
 | `device` | `{ state, id, userCode, verificationUrl, verificationUrlComplete?, expiresInSec, intervalSec, pollId }` | show the code, open the URL, poll `/poll` every `intervalSec`. |
-| `paste` | `{ state, id, url, pollId, hint }` | LAST RESORT. Open `url`; the provider shows a code; the user types it into an in-app field; `POST /complete { pollId, code }`. Label this "manual". |
+| `paste` | `{ state, id, url, pollId, hint }` | Open `url` in a real Safari sheet; the provider shows a code with a Copy button; the person pastes it into the app; `POST /complete { pollId, code }`. The default for Claude and Claude Code, which both have a code page. |
 | `signed_in` | `{ state, id }` | already signed in (the login was not started). |
 | `unsupported` | `{ state, id, reason }` | show `reason`. |
 
@@ -79,10 +79,10 @@ records the authorize URL instead of opening anything. Every login, completion a
 
 | id | kind | A loopback | B device | C paste | verified how |
 |---|---|---|---|---|---|
-| `claude-code` | coding-agent | yes (default) | no | yes (`method:"paste"`, also the automatic fallback) | REAL `claude` 2.1.280 on Rook, run to the URL under a throwaway HOME, through the broker; completion proven with a mock only |
+| `claude-code` | coding-agent | yes (`method:"loopback"`) | no | yes (default: its code page works in a Safari sheet) | REAL `claude` 2.1.280 on Rook, run to the URL under a throwaway HOME, through the broker; completion proven with a mock only |
 | `codex` | coding-agent | yes (default) | yes (`method:"device"` runs `codex login --device-auth`) | no | NOT installed on Rook: mock only; behaviour is from the CLI's documented flow |
 | `kimi-cli` | coding-agent | no | yes (parse a `XXXX-XXXX` code + URL from the output) | no | NOT installed on Rook: generic parser, unverified; reported `unknown` while the binary is absent |
-| `ares-anthropic` | model | yes: `runAnthropicLoginFlow`, listener `127.0.0.1:53692/callback` | no | no | in-process; token exchange mocked; file `~/.ares/anthropic-oauth.json` read back by `loadAnthropicTokens` / `resolveAnthropicAccessToken` |
+| `ares-anthropic` | model | yes (`method:"loopback"`): `runAnthropicLoginFlow`, listener `127.0.0.1:53692/callback` | no | yes (default): `startAnthropicLogin({ manual: true })` sends Claude to `console.anthropic.com/oauth/code/callback`, the pasted `code#state` goes through `finishAnthropicLogin` | in-process; token exchange mocked; file `~/.ares/anthropic-oauth.json` read back by `loadAnthropicTokens` / `resolveAnthropicAccessToken` |
 | `ares-openai` | model | yes: `runOpenAILoginFlow`, listener `127.0.0.1:1455/auth/callback` | no (the issuer's device endpoint sits behind a bot challenge, see openaiAuth.ts) | no | in-process; exchange mocked; file `~/.ares/auth.json` |
 | `ares-kimi` | model | no | yes: `runKimiLoginFlow` device flow | no | in-process; endpoints mocked; file `~/.ares/kimi-auth.json` |
 

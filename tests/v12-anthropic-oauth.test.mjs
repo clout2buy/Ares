@@ -74,6 +74,25 @@ test("manual Claude OAuth completion sends Crypt-compatible token payload", asyn
   assert.match(request.init.headers["User-Agent"], /^claude-cli\//);
 });
 
+test("manual Claude challenge sends the browser to Claude's code page, and the exchange names that same redirect", async () => {
+  const challenge = startAnthropicLogin({ manual: true });
+  const u = new URL(challenge.authorizeUrl);
+  assert.equal(u.searchParams.get("redirect_uri"), "https://console.anthropic.com/oauth/code/callback");
+  assert.equal(challenge.redirectUri, "https://console.anthropic.com/oauth/code/callback");
+  let body;
+  const fetchImpl = async (_url, init) => {
+    body = JSON.parse(init.body);
+    return new Response(JSON.stringify({ access_token: "a", refresh_token: "r", expires_in: 60 }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  // What the code page shows: code#state.
+  const r = await finishAnthropicLogin(`the-code#${challenge.state}`, challenge.pkceVerifier, challenge.state, fetchImpl, challenge.redirectUri);
+  assert.equal(r.accessToken, "a");
+  assert.equal(body.code, "the-code");
+  assert.equal(body.redirect_uri, "https://console.anthropic.com/oauth/code/callback");
+  // The loopback challenge is unchanged.
+  assert.equal(new URL(startAnthropicLogin().authorizeUrl).searchParams.get("redirect_uri"), "http://localhost:53692/callback");
+});
+
 test("manual Claude OAuth completion rejects a mismatched state", async () => {
   const challenge = startAnthropicLogin();
   await assert.rejects(

@@ -9,17 +9,23 @@
 //   POST /gateway/providers/cancel   {pollId}
 //   POST /gateway/providers/logout   {id}
 //
-// Three mechanisms, best first:
+// Three mechanisms:
 //   A loopback  the login runs on the box (a CLI under a pty, or Ares's own
 //               in-process flow) and listens on http://localhost:<port>/<path>.
-//               The phone opens the authorize URL, intercepts the provider's
+//               The phone opens the authorize URL, catches the provider's
 //               redirect to that loopback address, and posts it back; the
 //               SERVER replays it against its own listener (127.0.0.1:<port>
 //               parsed from the CLI's redirect_uri, never a client host).
+//               Catching that redirect needs a web view the app owns, and
+//               Google's sign-in popup does not run inside one: so where a
+//               provider has a code page (Claude, Claude Code) the phone gets
+//               `paste` by default and loopback only on request.
 //   B device    {userCode, verificationUrl}; completion is the CLI exiting 0 /
 //               the credential appearing.
-//   C paste     last resort: the code the provider shows is typed into the app
-//               and written to the pty's stdin.
+//   C paste     the provider shows a code; the phone opens the page in a real
+//               Safari sheet, the person copies the code and pastes it into
+//               the app; the box finishes the exchange (in-process) or writes
+//               it to the pty's stdin (a CLI).
 //
 // A CLI runs under `script -qefc` (a pty, no new dependency) with a SCRUBBED
 // environment, HOME of the service user, and BROWSER / xdg-open pointing at a
@@ -37,12 +43,14 @@ import {
   appendAudit,
   authFilePath,
   clearAnthropicTokens,
+  finishAnthropicLogin,
   kimiAuthStatus,
   kimiLogout,
   loadAnthropicTokens,
   runAnthropicLoginFlow,
   runKimiLoginFlow,
   runOpenAILoginFlow,
+  startAnthropicLogin,
 } from "@ares/core";
 import { cleanAccount, safeText } from "./connectionsSafe.js";
 
@@ -103,12 +111,13 @@ const CLI_SPECS: Record<CliId, CliSpec> = {
     id: "claude-code",
     label: "Claude Code",
     bin: "claude",
-    // verified on the box: prints a loopback authorize URL via BROWSER and a manual (paste) URL on stdout
+    // verified on the box: prints a loopback authorize URL via BROWSER and a manual (paste) URL on stdout.
+    // Paste is the default for the phone: its code page works in a real Safari sheet, where Google sign-in works too.
     login: { loopback: ["auth", "login"], paste: ["auth", "login"] },
     statusArgs: ["auth", "status", "--json"],
     logoutArgs: ["auth", "logout"],
     credFile: ".claude/.credentials.json",
-    method: "loopback",
+    method: "paste",
   },
   codex: {
     id: "codex",
@@ -134,7 +143,7 @@ const CLI_SPECS: Record<CliId, CliSpec> = {
 };
 
 const OWN_LABELS: Record<OwnId, { label: string; method: LoginMethod }> = {
-  "ares-anthropic": { label: "Ares - Claude subscription", method: "loopback" },
+  "ares-anthropic": { label: "Ares - Claude subscription", method: "paste" },
   "ares-openai": { label: "Ares - ChatGPT / Codex", method: "loopback" },
   "ares-kimi": { label: "Ares - Kimi", method: "device" },
 };
@@ -528,6 +537,28 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
 
   // ---- Ares's own in-process logins ----------------------------------------
 
+  /** Claude by its code page: the phone opens the page in Safari, the person pastes `code#state`, the box exchanges it. */
+  const startAnthropicPasteLogin = (): Record<string, unknown> => {
+    const flow = newFlow("ares-anthropic", "paste");
+    const auth = startAnthropicLogin({ manual: true });
+    flow.secrets.push(auth.pkceVerifier);
+    flow.sendCode = (code: string): boolean => {
+      if (flow.status !== "pending") return false;
+      finishAnthropicLogin(code, auth.pkceVerifier, auth.state, opts.anthropicFetch ?? fetch, auth.redirectUri).then(
+        () => flow.finish("signed_in"),
+        (err: unknown) => flow.finish("failed", safeText(err, flow.secrets, 200)),
+      );
+      return true;
+    };
+    return {
+      state: "paste",
+      id: "ares-anthropic",
+      url: auth.authorizeUrl,
+      pollId: flow.pollId,
+      hint: "Sign in to Claude and tap Authorize. Claude then shows a code with a Copy button: copy it, come back here and paste it.",
+    };
+  };
+
   const startOwnLogin = async (id: OwnId): Promise<Record<string, unknown>> => {
     const flow = newFlow(id, id === "ares-kimi" ? "device" : "loopback");
     const ac = new AbortController();
@@ -639,7 +670,7 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
           const body = await readBody(req);
           if (!knownId(body.id)) throw new HttpFail(404, "unknown provider");
           const id = body.id;
-          const method = body.method === "device" || body.method === "paste" ? body.method : undefined;
+          const method = body.method === "device" || body.method === "paste" || body.method === "loopback" ? body.method : undefined;
           const existing = active.get(id);
           if (existing && existing.status === "pending") throw new HttpFail(409, "a sign-in for this provider is already in progress", { state: "login_in_progress", pollId: existing.pollId });
           if (body.force !== true) {
@@ -649,13 +680,16 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
           let result: Record<string, unknown>;
           if ((CLI_IDS as string[]).includes(id)) {
             const spec = CLI_SPECS[id as CliId];
-            result = await startCliLogin(spec, method ?? (spec.method === "device" ? "device" : "loopback"));
+            result = await startCliLogin(spec, method ?? (spec.method === "key" ? "loopback" : spec.method));
           } else {
-            if (method === "paste" || (method === "device" && id !== "ares-kimi")) {
-              send(res, 200, { state: "unsupported", id, reason: `${OWN_LABELS[id as OwnId].label} signs in by ${OWN_LABELS[id as OwnId].method} only` });
+            const own = OWN_LABELS[id as OwnId];
+            // Claude: paste by default (its code page), loopback on request. The others have one way only.
+            const ok = id === "ares-anthropic" ? method !== "device" : method === undefined || method === own.method;
+            if (!ok) {
+              send(res, 200, { state: "unsupported", id, reason: `${own.label} signs in by ${own.method} only` });
               return true;
             }
-            result = await startOwnLogin(id as OwnId);
+            result = id === "ares-anthropic" && method !== "loopback" ? startAnthropicPasteLogin() : await startOwnLogin(id as OwnId);
           }
           log(`${id} login ${String(result.state)}`);
           audit("providers.login", id, { method: String(result.state) }, String(result.state));
@@ -681,7 +715,8 @@ export function createProvidersApi(opts: ProvidersApiOptions = {}) {
             await replay(flow.port!, target);
           } else {
             if (flow.mode !== "paste" || !flow.sendCode) throw new HttpFail(400, "this sign-in does not take a pasted code");
-            if (!/^[A-Za-z0-9._~#:/+=-]{6,800}$/.test(code!)) throw new HttpFail(400, "that does not look like an authorization code");
+            // A code, `code#state`, or the whole address the page ended on (its code= is read out on the box).
+            if (!/^[A-Za-z0-9._~#:/+=?&%-]{6,2000}$/.test(code!)) throw new HttpFail(400, "that does not look like an authorization code");
             flow.secrets.push(code!);
             flow.consumed = true;
             if (!flow.sendCode(code!)) throw new HttpFail(409, "the sign-in is no longer running", { state: pollOf(flow).state });

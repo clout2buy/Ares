@@ -101,10 +101,19 @@ export function utf8CompleteLength(buf: Buffer): number {
   return buf.length - i >= need ? buf.length : i;
 }
 
-/** The environment a terminal (or one-shot run) gets: an allowlist, never the garrison's own. */
+/**
+ * The environment a terminal (or one-shot run) gets: an allowlist, never the
+ * garrison's own. `browserShimDir` (a directory holding `ares-open` and
+ * `xdg-open`) makes "open a browser" print the link into the shell instead:
+ * a box has no browser, but the phone reading the shell does, and a sign-in
+ * link that names a loopback redirect is finished by the phone (the Shell
+ * tab's "Sign in and finish automatically"). Without it, a CLI such as Claude
+ * Code falls back to its copy-a-code page.
+ */
 export function buildTerminalEnv(
   base: NodeJS.ProcessEnv = process.env,
   extraPass: readonly string[] = [],
+  browserShimDir?: string,
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of [...ENV_ALLOW, ...extraPass]) {
@@ -118,8 +127,34 @@ export function buildTerminalEnv(
   env["TERM"] = "xterm-256color";
   env["COLORTERM"] = "truecolor";
   env["LANG"] = "en_US.UTF-8";
+  if (browserShimDir) {
+    // A POSIX shell variable (the terminal is tmux on Linux), whatever host runs the tests.
+    env["BROWSER"] = path.posix.join(browserShimDir, "ares-open");
+    env["PATH"] = `${browserShimDir}:${env["PATH"]}`;
+  }
   return env;
 }
+
+/**
+ * What `$BROWSER` / `xdg-open` run in the shell: the link, printed to the
+ * terminal for the phone to tap (the phone's Shell tab recognises a sign-in
+ * link with a loopback redirect and offers to finish it itself). Anything that
+ * is not a web link is ignored, and the exit is always 0 so the CLI goes on
+ * waiting for its callback instead of giving up on the browser.
+ */
+export const BROWSER_SHIM = [
+  "#!/bin/sh",
+  "# written by Ares (phoneTerminal.ts): the shell's browser is the phone reading it",
+  'for a in "$@"; do',
+  '  case "$a" in',
+  '    http://*|https://*)',
+  '      printf \'\\n\\033[1mOpen this link on your phone to sign in:\\033[0m\\n%s\\n\\n\' "$a" > /dev/tty 2>/dev/null || printf \'%s\\n\' "$a"',
+  "      ;;",
+  "  esac",
+  "done",
+  "exit 0",
+  "",
+].join("\n");
 
 const SECRET_SHAPES: RegExp[] = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
@@ -295,6 +330,8 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     run: path.join(opts.home, "terminal", "run"),
     logs: path.join(opts.home, "terminal", "logs"),
     conf: path.join(opts.home, "terminal", "tmux.conf"),
+    /** `ares-open` + `xdg-open`: a browser that prints the link into the shell (BROWSER_SHIM). */
+    bin: path.join(opts.home, "terminal", "bin"),
   };
   const sessions = new Map<string, Sess>();
   const createdAt: number[] = [];
@@ -335,7 +372,18 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
 
   // ── tmux plumbing ──
 
-  const termEnv = (): Record<string, string> => buildTerminalEnv(baseEnv, cfg.extraEnv());
+  const termEnv = (): Record<string, string> => buildTerminalEnv(baseEnv, cfg.extraEnv(), dirs.bin);
+
+  /** The shell's "browser": written next to the tmux conf, before the first shell starts. */
+  async function writeBrowserShim(): Promise<void> {
+    await fs.promises.mkdir(dirs.bin, { recursive: true, mode: 0o700 });
+    for (const name of ["ares-open", "xdg-open"]) {
+      const file = path.join(dirs.bin, name);
+      const cur = await fs.promises.readFile(file, "utf8").catch(() => "");
+      if (cur !== BROWSER_SHIM) await fs.promises.writeFile(file, BROWSER_SHIM, { mode: 0o700 });
+      await fs.promises.chmod(file, 0o700).catch(() => {});
+    }
+  }
 
   function tmux(args: string[], timeoutMs = TMUX_TIMEOUT_MS): Promise<{ code: number; out: string; err: string }> {
     return new Promise((resolve) => {
@@ -377,6 +425,7 @@ export function createTerminalApi(opts: TerminalApiOptions): TerminalApi {
     serverReady ??= (async () => {
       await fs.promises.mkdir(dirs.run, { recursive: true, mode: 0o700 });
       await fs.promises.writeFile(dirs.conf, TMUX_CONF, { mode: 0o600 });
+      await writeBrowserShim();
       if (await serverUp()) return;
       const mode = cfg.server();
       const underSystemd = !!process.env["INVOCATION_ID"];

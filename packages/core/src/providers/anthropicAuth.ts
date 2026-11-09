@@ -23,6 +23,9 @@ const CALLBACK_PORT = 53692;
 const CALLBACK_HOST = "127.0.0.1";
 const CALLBACK_PATH = "/callback";
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
+// Claude's own "copy this code" page: the redirect Claude Code uses when no
+// loopback listener can be reached (a remote shell, a phone driving a box).
+const MANUAL_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES = [
   "org:create_api_key",
   "user:profile",
@@ -149,9 +152,16 @@ function authFilePath(): string {
   return path.join(aresHome(), "anthropic-oauth.json");
 }
 
-export function startAnthropicLogin(): AnthropicAuthChallenge {
+/**
+ * Start a Claude sign-in. `manual: true` is the flow for a device that cannot
+ * take a loopback redirect (a phone talking to a box): Claude sends the browser
+ * to its own code page instead, which shows `code#state` for the person to copy
+ * and paste back. The token exchange must then name that same redirect.
+ */
+export function startAnthropicLogin(opts: { manual?: boolean } = {}): AnthropicAuthChallenge {
   const verifier = base64url(randomBytes(32));
   const challenge = base64url(createHash("sha256").update(verifier).digest());
+  const redirectUri = opts.manual ? MANUAL_REDIRECT_URI : REDIRECT_URI;
 
   // Claude Code's public client expects the verifier itself as state. A
   // separate random state causes its token exchange to fail.
@@ -160,7 +170,7 @@ export function startAnthropicLogin(): AnthropicAuthChallenge {
   url.searchParams.set("code", "true");
   url.searchParams.set("client_id", CLIENT_ID);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("redirect_uri", REDIRECT_URI);
+  url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("scope", SCOPES);
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
@@ -171,7 +181,7 @@ export function startAnthropicLogin(): AnthropicAuthChallenge {
     pkceVerifier: verifier,
     state,
     port: CALLBACK_PORT,
-    redirectUri: REDIRECT_URI,
+    redirectUri,
   };
 }
 
@@ -282,6 +292,7 @@ async function exchangeCode(
   code: string,
   verifier: string,
   fetchImpl: typeof fetch,
+  redirectUri: string = REDIRECT_URI,
 ): Promise<AnthropicOAuthTokens> {
   const res = await fetchImpl(TOKEN_URL, {
     method: "POST",
@@ -295,7 +306,7 @@ async function exchangeCode(
       client_id: CLIENT_ID,
       code,
       state: verifier,
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: redirectUri,
       code_verifier: verifier,
     }),
   });
@@ -322,12 +333,17 @@ async function exchangeCode(
   return tokens;
 }
 
-/** Complete a manually copied callback URL or authorization code. */
+/**
+ * Complete a manually copied callback URL or authorization code (`code#state`
+ * from Claude's code page, or the whole address the browser ended on).
+ * `redirectUri` is the one the challenge was started with (see the manual flow).
+ */
 export async function finishAnthropicLogin(
   rawCode: string,
   pkceVerifier: string,
   expectedState: string,
   fetchImpl: typeof fetch = fetch,
+  redirectUri: string = REDIRECT_URI,
 ): Promise<AnthropicOAuthTokens> {
   const raw = rawCode.trim();
   let code = raw;
@@ -343,7 +359,7 @@ export async function finishAnthropicLogin(
   }
   if (!code) throw new Error("Claude authorization code is missing.");
   if (state && state !== expectedState) throw new Error("Claude OAuth state mismatch.");
-  return exchangeCode(code, pkceVerifier, fetchImpl);
+  return exchangeCode(code, pkceVerifier, fetchImpl, redirectUri);
 }
 
 async function readJson(file: string): Promise<unknown> {

@@ -10,7 +10,7 @@ import path from "node:path";
 import WebSocket from "ws";
 
 import { RemoteAgentServer } from "../packages/cli/dist/remoteAgentServer.js";
-import { createTerminalApi, utf8CompleteLength, buildTerminalEnv, remoteClass, scrubText, tokenEquals, OutputRing } from "../packages/cli/dist/phoneTerminal.js";
+import { createTerminalApi, utf8CompleteLength, buildTerminalEnv, BROWSER_SHIM, remoteClass, scrubText, tokenEquals, OutputRing } from "../packages/cli/dist/phoneTerminal.js";
 import { ownerPause, stopAllStoppables, readAudit } from "../packages/core/dist/index.js";
 
 const OWNER = "owner-token-0123456789abcdef";
@@ -123,6 +123,13 @@ test("the child environment is an allowlist, never the garrison's own", () => {
   assert.equal(env.TERM, "xterm-256color");
   assert.equal(env.LANG, "en_US.UTF-8");
   assert.equal(buildTerminalEnv({ PATH: "/p", FOO_OK: "1" }, ["FOO_OK"]).FOO_OK, "1", "explicit opt-in works");
+  // The shell's browser is the phone reading it: $BROWSER and xdg-open print the link.
+  const shimmed = buildTerminalEnv({ PATH: "/usr/bin" }, [], "/h/terminal/bin");
+  assert.equal(shimmed.BROWSER, "/h/terminal/bin/ares-open");
+  assert.equal(shimmed.PATH, "/h/terminal/bin:/usr/bin");
+  assert.match(BROWSER_SHIM, /^#!\/bin\/sh\n/);
+  assert.match(BROWSER_SHIM, /http:\/\/\*\|https:\/\/\*/, "only web links are printed");
+  assert.match(BROWSER_SHIM, /\nexit 0\n$/, "a CLI must keep waiting for its callback, not give up on the browser");
 });
 
 test("transport classes: only loopback sockets can be 'tunnel'; LAN is never trusted by its headers", () => {

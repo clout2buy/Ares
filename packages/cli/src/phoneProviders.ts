@@ -112,12 +112,12 @@ const CLI_SPECS: Record<CliId, CliSpec> = {
     label: "Claude Code",
     bin: "claude",
     // verified on the box: prints a loopback authorize URL via BROWSER and a manual (paste) URL on stdout.
-    // Paste is the default for the phone: its code page works in a real Safari sheet, where Google sign-in works too.
+    // The phone asks for `loopback` when it can catch the redirect itself, `paste` otherwise.
     login: { loopback: ["auth", "login"], paste: ["auth", "login"] },
     statusArgs: ["auth", "status", "--json"],
     logoutArgs: ["auth", "logout"],
     credFile: ".claude/.credentials.json",
-    method: "paste",
+    method: "loopback",
   },
   codex: {
     id: "codex",

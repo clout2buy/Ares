@@ -79,7 +79,7 @@ records the authorize URL instead of opening anything. Every login, completion a
 
 | id | kind | A loopback | B device | C paste | verified how |
 |---|---|---|---|---|---|
-| `claude-code` | coding-agent | yes (`method:"loopback"`) | no | yes (default: its code page works in a Safari sheet) | REAL `claude` 2.1.280 on Rook, run to the URL under a throwaway HOME, through the broker; completion proven with a mock only |
+| `claude-code` | coding-agent | yes (default) | no | yes (`method:"paste"`, also the automatic fallback; the phone asks for it when it cannot catch the redirect itself) | REAL `claude` 2.1.280 on Rook, run to the URL under a throwaway HOME, through the broker; completion proven with a mock only |
 | `codex` | coding-agent | yes (default) | yes (`method:"device"` runs `codex login --device-auth`) | no | NOT installed on Rook: mock only; behaviour is from the CLI's documented flow |
 | `kimi-cli` | coding-agent | no | yes (parse a `XXXX-XXXX` code + URL from the output) | no | NOT installed on Rook: generic parser, unverified; reported `unknown` while the binary is absent |
 | `ares-anthropic` | model | yes (`method:"loopback"`): `runAnthropicLoginFlow`, listener `127.0.0.1:53692/callback` | no | yes (default): `startAnthropicLogin({ manual: true })` sends Claude to `console.anthropic.com/oauth/code/callback`, the pasted `code#state` goes through `finishAnthropicLogin` | in-process; token exchange mocked; file `~/.ares/anthropic-oauth.json` read back by `loadAnthropicTokens` / `resolveAnthropicAccessToken` |
